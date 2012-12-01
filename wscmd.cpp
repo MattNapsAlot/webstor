@@ -17,13 +17,13 @@
 // Author: Maxim Mazeev <mazeev@hotmail.com>
 
 //////////////////////////////////////////////////////////////////////////////
-// Standalone S3 test app.
+// Standalone WebStor command line app.
 //////////////////////////////////////////////////////////////////////////////
 
-#define S3_TEST_CLI_COMPAT
+#define WS_CMD_CLI_COMPAT
 
-#include "s3conn.h"
 #include "sysutils.h"
+#include "wsconn.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,7 +49,7 @@ static const size_t MB = 1024 * 1024;
 // methods.
 
 static StringWithLen s_cmdFlags = 
-#ifdef S3_TEST_CLI_COMPAT
+#ifdef WS_CMD_CLI_COMPAT
     { STRING_WITH_LEN( "-i -s -H -U -P -G -a -f -n -p -m -x -d -z -b -v -help --help -? --? -W -k" ) };
 #else
     { STRING_WITH_LEN( "-i -s -H -U -P -G -a -f -n -p -m -x -d -z -b -v -help --help -? --?" ) };
@@ -59,18 +59,18 @@ static void
 usage()
 {
     std::cout << 
-        "s3test options:                                                                \n"
+        "wscmd options:                                                                 \n"
         "                                                                               \n"
-        "    -i mandatory AWS access key,                                               \n"
-        "       (it can be specified via AWS_ACCESS_KEY env. variable)                  \n"
-        "    -s mandatory AWS secret key,                                               \n"
-        "       (it can be specified via AWS_SECRET_KEY env. variable)                  \n"
+        "    -i mandatory cloud storage access key,                                     \n"
+        "       (it can be specified via WS_ACCESS_KEY env. variable)                   \n"
+        "    -s mandatory cloud storage secret key,                                     \n"
+        "       (it can be specified via WS_SECRET_KEY env. variable)                   \n"
         "    -H optional region-specific endpoint or a mandatory Walrus host name,      \n"
-        "       (it can be specified via AWS_HOST env. variable)                        \n"
+        "       (it can be specified via WS_HOST env. variable)                         \n"
         "    -P optional port number,                                                   \n"
         "    -U (optional flag to use HTTP instead of HTTPS),                           \n"
         "    -G optional proxy with port number (proxy:port),                           \n"
-        "       (it can be specified via AWS_PROXY env. variable)                       \n"
+        "       (it can be specified via WS_PROXY env. variable)                        \n"
         "    -a action, one of the following:                                           \n"
         "       createBucket                                                            \n"
         "       delBucket                                                               \n"
@@ -87,7 +87,7 @@ usage()
         "                                                                               \n"
         "    -f filename (for 'put' and 'get'),                                         \n"
         "    -n bucket name (all except for 'listAllBuckets'),                          \n"
-        "       (it can be specified via AWS_BUCKET_NAME env. variable)                 \n"
+        "       (it can be specified via WS_BUCKET_NAME env. variable)                  \n"
         "    -p key or key prefix (all except for bucket-related actions),              \n"
         "    -m marker for entries to list (for 'listAllObjects' and                    \n"
         "       'listAllMultipartUploads'),                                             \n"
@@ -101,11 +101,11 @@ usage()
         "    -v verbose mode.                                                           \n"
         "                                                                               \n"
         "Some of options can be specified through env. variables:                       \n"
-        "    AWS_ACCESS_KEY  - instead of option '-i',                                  \n"
-        "    AWS_SECRET_KEY  - instead of option '-s',                                  \n"
-        "    AWS_HOST        - instead of option '-H',                                  \n"
-        "    AWS_BUCKET_NAME - instead of option '-n',                                  \n"
-        "    AWS_PROXY       - instead of option '-G',                                  \n"
+        "    WS_ACCESS_KEY  - instead of option '-i',                                   \n"
+        "    WS_SECRET_KEY  - instead of option '-s',                                   \n"
+        "    WS_HOST        - instead of option '-H',                                   \n"
+        "    WS_BUCKET_NAME - instead of option '-n',                                   \n"
+        "    WS_PROXY       - instead of option '-G',                                   \n"
         "                                                                               \n"
         "Notes:                                                                         \n"
         "    If you specify '-z' flag and upload doesn't finish because of crash or     \n"
@@ -116,46 +116,45 @@ usage()
         "Examples:                                                                      \n"
         "                                                                               \n"
         " * create a new bucket:                                                        \n"
-        "   s3test -i AWS_ACCESS_KEY -s AWS_SECRET_KEY -a createBucket -n mybucket      \n"
+        "   wscmd -i WS_ACCESS_KEY -s WS_SECRET_KEY -a createBucket -n mybucket         \n"
         "                                                                               \n"
         " * delete a bucket:                                                            \n"
-        "   s3test -i AWS_ACCESS_KEY -s AWS_SECRET_KEY -a delBucket -n mybucket         \n"
+        "   wscmd -i WS_ACCESS_KEY -s WS_SECRET_KEY -a delBucket -n mybucket            \n"
         "                                                                               \n"
         " * list all buckets:                                                           \n"
-        "   s3test -i AWS_ACCESS_KEY -s AWS_SECRET_KEY -a listAllBuckets                \n"
+        "   wscmd -i WS_ACCESS_KEY -s WS_SECRET_KEY -a listAllBuckets                   \n"
         "                                                                               \n"
         " * upload a file:                                                              \n"
-        "   s3test -i AWS_ACCESS_KEY -s AWS_SECRET_KEY -a put -n mybucket               \n"
+        "   wscmd -i WS_ACCESS_KEY -s WS_SECRET_KEY -a put -n mybucket                  \n"
         "   -f image.jpg -p folder/image.jpg -v                                         \n"
         "                                                                               \n"
         " * upload a large file using multipart upload:                                 \n"
-        "   s3test -i AWS_ACCESS_KEY -s AWS_SECRET_KEY -a put -n mybucket               \n"
+        "   wscmd -i WS_ACCESS_KEY -s WS_SECRET_KEY -a put -n mybucket                  \n"
         "   -f image.jpg -p folder/image.jpg -z 5 -v                                    \n"
         "                                                                               \n"
         " * download a file:                                                            \n"
-        "   s3test -i AWS_ACCESS_KEY -s AWS_SECRET_KEY -a get -n mybucket               \n"
+        "   wscmd -i WS_ACCESS_KEY -s WS_SECRET_KEY -a get -n mybucket                  \n"
         "   -f image.jpg -p folder/image.jpg -v                                         \n"
         "                                                                               \n"
         " * delete an object:                                                           \n"
-        "   s3test -i AWS_ACCESS_KEY -s AWS_SECRET_KEY -a del -n mybucket               \n"
+        "   wscmd -i WS_ACCESS_KEY -s WS_SECRET_KEY -a del -n mybucket                  \n"
         "   -p folder/image.jpg                                                         \n"
         "                                                                               \n"
         " * delete all objects for a given prefix (e.g. from a directory):              \n"
-        "   s3test -i AWS_ACCESS_KEY -s AWS_SECRET_KEY -a delAll -n mybucket -p folder/ \n"
+        "   wscmd -i WS_ACCESS_KEY -s WS_SECRET_KEY -a delAll -n mybucket -p folder/    \n"
         "                                                                               \n"
         " * list all objects:                                                           \n"
-        "   s3test -i AWS_ACCESS_KEY -s AWS_SECRET_KEY -a listAllObjects -n mybucket    \n"
+        "   wscmd -i WS_ACCESS_KEY -s WS_SECRET_KEY -a listAllObjects -n mybucket       \n"
         "                                                                               \n"
         " * list all objects with a given prefix (e.g. all objects in a directory):     \n"
-        "   s3test -i AWS_ACCESS_KEY -s AWS_SECRET_KEY -a listAllObjects -n mybucket    \n"
+        "   wscmd -i WS_ACCESS_KEY -s WS_SECRET_KEY -a listAllObjects -n mybucket       \n"
         "   -p folder/                                                                  \n"
         "                                                                               \n"
         " * list all top-level directories:                                             \n"
-        "   s3test -i AWS_ACCESS_KEY -s AWS_SECRET_KEY -a listAllObjects                \n"
-        "   -n mybucket -d /                                                            \n"
+        "   wscmd -i WS_ACCESS_KEY -s WS_SECRET_KEY -a listAllObjects -n mybucket -d /  \n"
         "                                                                               \n"
         " * list all sub directories:                                                   \n"
-        "   s3test -i AWS_ACCESS_KEY -s AWS_SECRET_KEY -a listAllObjects -n mybucket    \n"
+        "   wscmd -i WS_ACCESS_KEY -s WS_SECRET_KEY -a listAllObjects -n mybucket       \n"
         "   -p folder/ -d /                                                             \n";
 }
 
@@ -289,11 +288,11 @@ readEnvVars( Options *options )
 {
     dbgAssert( options );
 
-    readEnvVar( "AWS_ACCESS_KEY", &options->accKey );
-    readEnvVar( "AWS_SECRET_KEY", &options->secKey );
-    readEnvVar( "AWS_BUCKET_NAME", &options->bucketName );
-    readEnvVar( "AWS_HOST", &options->host );
-    readEnvVar( "AWS_PROXY", &options->proxy );
+    readEnvVar( "WS_ACCESS_KEY", &options->accKey );
+    readEnvVar( "WS_SECRET_KEY", &options->secKey );
+    readEnvVar( "WS_BUCKET_NAME", &options->bucketName );
+    readEnvVar( "WS_HOST", &options->host );
+    readEnvVar( "WS_PROXY", &options->proxy );
 }
 
 
@@ -318,7 +317,7 @@ parseCommandLine( int argc, char **argv, Options *options )
 {
     dbgAssert( options );
 
-#ifdef S3_TEST_CLI_COMPAT
+#ifdef WS_CMD_CLI_COMPAT
     bool unused = false;
 #endif
 
@@ -347,7 +346,7 @@ parseCommandLine( int argc, char **argv, Options *options )
             tryGetValue( "-help", &i, argc, argv, &options->showUsage ) ||
             tryGetValue( "-?", &i, argc, argv, &options->showUsage ) ||
             tryGetValue( "--?", &i, argc, argv, &options->showUsage ) 
-#ifdef S3_TEST_CLI_COMPAT
+#ifdef WS_CMD_CLI_COMPAT
             || tryGetValue( "-k", &i, argc, argv, &options->prefix ) 
             || tryGetValue( "-W", &i, argc, argv, &unused )
 #endif
@@ -378,13 +377,13 @@ checkSpecified( const std::string &value, const char *errMsg )
 static void
 checkAccessKey( const Options &options )
 {
-    checkSpecified( options.accKey, "AWS access key is not specified. You need to provide '-i accessKey' option." );
+    checkSpecified( options.accKey, "Cloud storage access key is not specified. You need to provide '-i accessKey' option." );
 }
 
 static void
 checkSecretKey( const Options &options )
 {
-    checkSpecified( options.secKey, "AWS secret key is not specified. You need to provide '-s secretKey' option." );
+    checkSpecified( options.secKey, "Cloud storage secret key is not specified. You need to provide '-s secretKey' option." );
 }
 
 static void
@@ -414,7 +413,7 @@ checkKey( const Options &options )
 static void
 checkChunkSize( const Options &options )
 {
-    if( options.chunkSize < S3Connection::c_multipartUploadMinPartSizeMB )
+    if( options.chunkSize < WsConnection::c_multipartUploadMinPartSizeMB )
     {
         snprintf( s_errMsg, sizeof( s_errMsg ) - 1, 
             "Invalid chunkSize '%llu'. Check '-z chunkSize' option, it must be 5MB minimum (chunkSize value is MB).", 
@@ -436,16 +435,16 @@ checkChunkSize( const Options &options )
 // 'ListXXX' actions.
 
 static void
-listAllBuckets( S3Connection *conn, const Options &options )
+listAllBuckets( WsConnection *conn, const Options &options )
 {
     dbgAssert( conn );
 
-    std::vector< S3Bucket > buckets;
+    std::vector< WsBucket > buckets;
     size_t index = 0;
 
     conn->listAllBuckets( &buckets );
 
-    for( std::vector< S3Bucket >::const_iterator it = buckets.begin(); it != buckets.end(); ++it )
+    for( std::vector< WsBucket >::const_iterator it = buckets.begin(); it != buckets.end(); ++it )
     {
         std::cout << '[' << index++ << "] " << 
             it->name << ' ' << 
@@ -459,14 +458,14 @@ listAllBuckets( S3Connection *conn, const Options &options )
 }
 
 static void
-listAllObjects( S3Connection *conn, const Options &options )
+listAllObjects( WsConnection *conn, const Options &options )
 {
     dbgAssert( conn );
 
     checkBucketName( options );
 
-    std::vector< S3Object > objects;
-    S3ListObjectsResponse response;
+    std::vector< WsObject > objects;
+    WsListObjectsResponse response;
     size_t index = 0;
 
     response.nextMarker = options.marker;
@@ -478,7 +477,7 @@ listAllObjects( S3Connection *conn, const Options &options )
             response.nextMarker.c_str(), options.delimiter.c_str(), 
             ( options.maxKeys == 0 ? 1000 : options.maxKeys ), &objects, &response );
 
-        for( std::vector< S3Object >::const_iterator it = objects.begin(); it != objects.end(); ++it )
+        for( std::vector< WsObject >::const_iterator it = objects.begin(); it != objects.end(); ++it )
         {
             std::cout << '[' << index++ << "] " << 
                 ( it->isDir ? "D " : " " ) <<
@@ -496,14 +495,14 @@ listAllObjects( S3Connection *conn, const Options &options )
 }
 
 static void
-listAllMultipartUploads( S3Connection *conn, const Options &options )
+listAllMultipartUploads( WsConnection *conn, const Options &options )
 {
     dbgAssert( conn );
 
     checkBucketName( options );
 
-    std::vector< S3MultipartUpload > uploads;
-    S3ListMultipartUploadsResponse response;
+    std::vector< WsMultipartUpload > uploads;
+    WsListMultipartUploadsResponse response;
     size_t index = 0;
 
     response.nextKeyMarker = options.marker;
@@ -518,7 +517,7 @@ listAllMultipartUploads( S3Connection *conn, const Options &options )
             ( options.maxKeys == 0 ? 1000 : options.maxKeys ), 
             &uploads, &response );
 
-        for( std::vector< S3MultipartUpload >::const_iterator it = uploads.begin(); it != uploads.end(); ++it )
+        for( std::vector< WsMultipartUpload >::const_iterator it = uploads.begin(); it != uploads.end(); ++it )
         {
             std::cout << '[' << index++ << "] " << 
                 ( it->isDir ? "D " : " " ) <<
@@ -538,7 +537,7 @@ listAllMultipartUploads( S3Connection *conn, const Options &options )
 //////////////////////////////////////////////////////////////////////////////
 // 'Put' action.
 
-class StreamUploader : public S3PutRequestUploader
+class StreamUploader : public WsPutRequestUploader
 {
 public:
                     StreamUploader( std::istream *stream, bool verbose = false );
@@ -660,14 +659,14 @@ StreamUploader::onUpload( void *chunkBuf, size_t chunkSize )
 }
 
 static void 
-put( S3Connection *conn, StreamUploader *uploader, const Options &options )
+put( WsConnection *conn, StreamUploader *uploader, const Options &options )
 {
     dbgAssert( conn );
     dbgAssert( uploader );
 
     // Execute a single put.
 
-    S3PutResponse response;
+    WsPutResponse response;
     conn->put( options.bucketName.c_str(), options.prefix.c_str(), 
         uploader, uploader->totalSize(),
         options.makePublic, false /* useSrvEncrypt */, NULL /* contentType */,
@@ -677,7 +676,7 @@ put( S3Connection *conn, StreamUploader *uploader, const Options &options )
 }
 
 static void 
-multiput( S3Connection *conn, StreamUploader *uploader, const Options &options )
+multiput( WsConnection *conn, StreamUploader *uploader, const Options &options )
 {
     dbgAssert( conn );
     dbgAssert( uploader );
@@ -690,12 +689,12 @@ multiput( S3Connection *conn, StreamUploader *uploader, const Options &options )
 
     // Initiate multipart upload.
 
-    S3InitiateMultipartUploadResponse initResponse;
+    WsInitiateMultipartUploadResponse initResponse;
     conn->initiateMultipartUpload( options.bucketName.c_str(), options.prefix.c_str(),
         options.makePublic, false /* useSrvEncrypt */, NULL /* contentType */,
         &initResponse );
 
-    std::vector< S3PutResponse > parts;
+    std::vector< WsPutResponse > parts;
 
     for( int partNumber = 1; left; ++partNumber )
     {
@@ -703,7 +702,7 @@ multiput( S3Connection *conn, StreamUploader *uploader, const Options &options )
 
         size_t toPut = std::min( left, chunkSize );
 
-        S3PutResponse putResponse;
+        WsPutResponse putResponse;
         conn->putPart( options.bucketName.c_str(), options.prefix.c_str(), initResponse.uploadId.c_str(), 
             partNumber, uploader, toPut, &putResponse );
 
@@ -726,13 +725,13 @@ multiput( S3Connection *conn, StreamUploader *uploader, const Options &options )
 
     // Commit the upload.
 
-    S3CompleteMultipartUploadResponse completeResponse;
+    WsCompleteMultipartUploadResponse completeResponse;
     conn->completeMultipartUpload( options.bucketName.c_str(), options.prefix.c_str(),
         initResponse.uploadId.c_str(), &parts[ 0 ], parts.size(), &completeResponse );
 }
 
 static void
-put( S3Connection *conn, const Options &options, Statistics *stat )
+put( WsConnection *conn, const Options &options, Statistics *stat )
 {
     dbgAssert( conn );
     dbgAssert( stat );
@@ -778,7 +777,7 @@ put( S3Connection *conn, const Options &options, Statistics *stat )
 //////////////////////////////////////////////////////////////////////////////
 // 'Get' action.
 
-class StreamLoader : public S3GetResponseLoader
+class StreamLoader : public WsGetResponseLoader
 {
 public:
                     StreamLoader( std::ostream *stream, bool verbose = false );
@@ -897,7 +896,7 @@ StreamLoader::onLoad( const void *chunkData, size_t chunkSize, size_t totalSizeH
 }
 
 static void
-get( S3Connection *conn, const Options &options, Statistics *stat )
+get( WsConnection *conn, const Options &options, Statistics *stat )
 {
     dbgAssert( conn );
     dbgAssert( stat );
@@ -925,7 +924,7 @@ get( S3Connection *conn, const Options &options, Statistics *stat )
 
     // Execute a single get.
 
-    S3GetResponse response;
+    WsGetResponse response;
     conn->get( options.bucketName.c_str(), options.prefix.c_str(), &loader, &response );
     
     std::cout << "Downloaded: " << response.loadedContentLength << std::endl;
@@ -942,28 +941,37 @@ execute( const Options &options, Statistics *stat )
     checkAccessKey( options );
     checkSecretKey( options );
 
-    // Auto-detect walrus.
+    // Infer storage type from the host name.
 
-    bool isWalrus = !options.host.empty() && 
-        strstr( options.host.c_str(), ".amazonaws.com" ) == 0;
+    WsStorType storType = WST_S3;
+
+    if( !options.host.empty() )
+    {
+        if( strstr( options.host.c_str(), ".amazonaws.com" ) )
+            storType = WST_S3;
+        else if( strstr( options.host.c_str(), ".googleapis.com" ) )
+            storType = WST_GCS;
+        else
+            storType = WST_WALRUS;
+    }
 
     // Open connection.
 
-    S3Config config = {};
+    WsConfig config = {};
     config.accKey = options.accKey.c_str();
     config.secKey = options.secKey.c_str();
     config.host = options.host.c_str();
-    config.isWalrus = isWalrus;
-    config.isHttps = isWalrus ? false : options.isHttps;
+    config.storType = storType;
+    config.isHttps = storType != WST_WALRUS && options.isHttps;
     config.port = options.port.c_str();
     config.proxy = options.proxy.c_str();
 
-    S3Connection conn( config );
+    WsConnection conn( config );
 
     // Execute a single action.
 
     if( !strcmp( options.action.c_str(), "createBucket" ) 
-#ifdef S3_TEST_CLI_COMPAT
+#ifdef WS_CMD_CLI_COMPAT
         || !strcmp( options.action.c_str(), "create" ) 
 #endif
         )
@@ -974,7 +982,7 @@ execute( const Options &options, Statistics *stat )
     }
 
     if( !strcmp( options.action.c_str(), "delBucket" ) 
-#ifdef S3_TEST_CLI_COMPAT
+#ifdef WS_CMD_CLI_COMPAT
         || !strcmp( options.action.c_str(), "delete" ) 
 #endif
         )
@@ -985,7 +993,7 @@ execute( const Options &options, Statistics *stat )
     }
 
     if( !strcmp( options.action.c_str(), "listAllBuckets" ) 
-#ifdef S3_TEST_CLI_COMPAT
+#ifdef WS_CMD_CLI_COMPAT
         || !strcmp( options.action.c_str(), "list" ) 
 #endif
         )
@@ -995,7 +1003,7 @@ execute( const Options &options, Statistics *stat )
     }
 
     if( !strcmp( options.action.c_str(), "put" ) 
-#ifdef S3_TEST_CLI_COMPAT
+#ifdef WS_CMD_CLI_COMPAT
         || !strcmp( options.action.c_str(), "putbin" ) 
 #endif
         )
@@ -1018,7 +1026,7 @@ execute( const Options &options, Statistics *stat )
     }
 
     if( !strcmp( options.action.c_str(), "delAll" ) 
-#ifdef S3_TEST_CLI_COMPAT
+#ifdef WS_CMD_CLI_COMPAT
         || !strcmp( options.action.c_str(), "delete-all-entries" )
 #endif
         )
@@ -1029,7 +1037,7 @@ execute( const Options &options, Statistics *stat )
     }
 
     if( !strcmp( options.action.c_str(), "listAllObjects" ) 
-#ifdef S3_TEST_CLI_COMPAT
+#ifdef WS_CMD_CLI_COMPAT
         || !strcmp( options.action.c_str(), "entries" )
 #endif
         )

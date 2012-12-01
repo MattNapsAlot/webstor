@@ -21,8 +21,8 @@
 //////////////////////////////////////////////////////////////////////////////
 
 
-#include "s3conn.h"
 #include "sysutils.h"
+#include "wsconn.h"
 
 #include <string.h>
 #include <algorithm>
@@ -41,25 +41,26 @@ static const size_t MB = KB * 1024;
 static const UInt64 SEC = 1000;
 static const UInt64 MINUTE = SEC * 60;
 
-static S3Config s_config = {};
+static WsConfig s_config = {};
 static const char *s_bucketName = NULL;
 
 static const size_t s_iterationCount = 100;
 static const size_t s_connectionCount = 64;
 static const char s_dumpFile[] = "";
 
-static const size_t s_objectSize = 256 * KB;
+static const size_t s_objectSize = 64 * KB;
 static const size_t s_objectSizeMax = 1 * MB;
 static unsigned char s_writeData[ s_objectSizeMax ] = {};
 static unsigned char s_readBufs[ s_connectionCount ][ s_objectSizeMax ] = {};
 
-static std::auto_ptr< S3Connection > s_cons[ s_connectionCount ];
+static std::auto_ptr< WsConnection > s_cons[ s_connectionCount ];
 static AsyncMan s_asyncMans[ 4 ];
 
 static const char s_key[] = "tmp/perf/test.dat";
 static const size_t  s_keyCount = 64;
 
 static double s_samples[ s_iterationCount ] = {};
+static UInt32 s_distribution[ MINUTE + 1 ];  // distribution of samples [0 ms .. 1 min]
 
 static UInt64 s_cooldown = 10 * SEC;
 
@@ -145,29 +146,8 @@ median( double *samples, size_t count )
     return ( count & 1 ) ?  samples[ m ] : ( samples[ m - 1 ] + samples[ m ] ) / 2;
 }
 
-
 static void 
-appendSample( double *samples, size_t size, size_t *current, double value )
-{
-    if( *current >= size )
-    {
-        // Shift elements.
-
-        for( size_t i = 1; i < size; ++i )
-        {
-            samples[ i - 1 ] = samples[ i ];
-        }
-
-        samples[ size - 1 ] = value;
-    }
-    else
-    {
-        samples[ ( *current )++ ] = value;
-    }
-}
-
-static void 
-print( const char *test, double *samples, size_t count, bool calcDiff = true )
+print( const char *test, double *samples, size_t count )
 {
     dbgAssert( test );
     dbgAssert( samples );
@@ -178,17 +158,92 @@ print( const char *test, double *samples, size_t count, bool calcDiff = true )
          return;
     }
 
-    if( calcDiff )
-    {
-        diffs( samples, &count );
-    }
+    diffs( samples, &count );
 
     dumpSamples( test, samples, count );
     std::cout << test << "\t" << average( samples, count ) << '\t' << median( samples, count ) << std::endl;
 }
 
+static void 
+appendSample( UInt32 *dist, size_t size, UInt64 value )
+{
+    dbgAssert( dist );
+    dbgAssert( size );
+
+    // Append sample to the distrubution.  The sample should
+    // be in ms.  Values that are larger than the distribution
+    // can support just go to the highest bucket.
+
+    if( value >= size )
+        value = size - 1;
+
+    ++dist[ value ];
+}
+
+static double
+average( UInt32 *dist, size_t size )
+{
+    dbgAssert( dist );
+    dbgAssert( size );
+
+    UInt64 count = 0;
+    UInt64 total = 0;
+
+    for( size_t i = size; i--; )
+    {
+        count += static_cast< UInt64 >( dist[ i ] );
+        total += static_cast< UInt64 >( dist[ i ] ) * static_cast< UInt64 >( i );
+    }
+
+    if( !count )
+        return 0.0;
+
+    return static_cast< double >( total ) / static_cast< double >( count );
+}
+
+static double
+median( UInt32 *dist, size_t size )
+{
+    dbgAssert( dist );
+    dbgAssert( size );
+
+    // Get the count of samples.
+
+    UInt64 count = 0;
+
+    for( size_t i = size; i--; )
+        count += static_cast< UInt64 >( dist[ i ] );
+
+    // Accumulate sample counts until we get to the
+    // half-count.
+
+    count /= 2;
+
+    UInt64 acc = 0;
+
+    for( size_t i = 0; i < size; i++ )
+    {
+        acc += static_cast< UInt64 >( dist[ i ] );
+
+        if( acc >= count )
+            return static_cast< double >( i );
+    }
+
+    return static_cast< double >( size );
+}
+
+static void 
+print( const char *test, UInt32 *dist, size_t size )
+{
+    dbgAssert( test );
+    dbgAssert( dist );
+    dbgAssert( size );
+
+    std::cout << test << "\t" << average( dist, size ) << '\t' << median( dist, size ) << std::endl;
+}
+
 static void
-printError( S3Connection *conn = NULL )  // nofail
+printError( WsConnection *conn = NULL )  // nofail
 {
     // This function must be called from inside of a catch( ... ).
 
@@ -231,7 +286,7 @@ testGet( int iconn, int iasyncMan, int key, size_t objectSize )
 {
     try
     {
-        S3GetResponse response;
+        WsGetResponse response;
         s_cons[ iconn ]->get( s_bucketName, getKey( key ).c_str(), s_readBufs[ iconn ], s_objectSize,
             &response );
         return response.loadedContentLength != -1;
@@ -294,7 +349,7 @@ testCompleteGet( int iconn, int iasyncMan, int key, size_t objectSize )
 {
     try
     {
-        S3GetResponse response;
+        WsGetResponse response;
         s_cons[ iconn ]->completeGet( &response );
         return response.loadedContentLength == objectSize && !response.isTruncated;
     }
@@ -479,42 +534,49 @@ struct Test
 
 
 void
-perfTestS3Connection()
+perfTestWsConnection()
 {
     // Check env. variables, if they are not set, skip the rest of the test.
 
-    S3Config config = {};
+    WsConfig config = {};
 
     // Mandatory variables.
 
-    if( !( config.accKey = getenv( "AWS_ACCESS_KEY" ) ) ||
-        !( config.secKey = getenv( "AWS_SECRET_KEY" ) ) ||
-        !( s_bucketName = getenv( "AWS_BUCKET_NAME" ) ) )
+    if( !( config.accKey = getenv( "WS_ACCESS_KEY" ) ) ||
+        !( config.secKey = getenv( "WS_SECRET_KEY" ) ) ||
+        !( s_bucketName = getenv( "WS_BUCKET_NAME" ) ) )
     {
-        std::cout << "skip Amazon/Walrus test because no AWS_XXXX is set. ";
+        std::cout << "skip cloud storage test because no WS_XXXX is set. ";
         return;
     }
 
     // Optional variables.
 
-    config.host = getenv( "AWS_HOST" );
+    config.host = getenv( "WS_HOST" );
 
-    if( config.host && *config.host && !strstr( config.host, "amazonaws.com" ) )
-    {    
-        config.isWalrus = true;
+    // Infer storage type from the host name.
+
+    if( config.host )
+    {
+        if( strstr( config.host, ".amazonaws.com" ) )
+            config.storType = WST_S3;
+        else if( strstr( config.host, ".googleapis.com" ) )
+            config.storType = WST_GCS;
+        else
+            config.storType = WST_WALRUS;
     }
 
-    config.proxy = getenv( "AWS_PROXY" );
+    config.proxy = getenv( "WS_PROXY" );
 
     // Print any background errors.
 
     setBackgroundErrHandler( &handleError );
 
-    // Instantiate S3 connections.
+    // Instantiate WebStor connections.
 
     for( size_t i = 0; i < dimensionOf( s_cons ); ++i )
     {
-        s_cons[ i ].reset( new S3Connection( config ) );
+        s_cons[ i ].reset( new WsConnection( config ) );
 
         // Enable HTTP tracing.
 
@@ -545,7 +607,10 @@ perfTestS3Connection()
 
     // Test Single operation.
 
-    std::cout << std::endl << "test response with a single connection." << std::endl;
+    std::cout << std::endl << "test response with a single connection, "
+        << dimensionOf( s_samples ) << " requests of " << ( s_objectSize / KB ) << "KB objects."
+        << std::endl;
+
     std::cout << "name\tresponse(average in msecs)\tresponse(median in msecs)" << std::endl;
 
     static const Test tests[] = 
@@ -613,7 +678,7 @@ perfTestS3Connection()
     std::cout << "name\tobjectSize(bytes)\tconnections\ttotal(bytes)\tbytes per sec\ttps(ops per sec)"
         "\telapsed(msecs)\terrors\tkeyCount\tresponse(average in msecs)\tresponse(median in msecs)" << std::endl;
 
-    const size_t objectSizes[] = { 4 * KB, 16 * KB, 64 * KB, 256 * KB, 1 * MB };
+    const size_t objectSizes[] = { 64 * KB, 256 * KB, 1 * MB };
 
     Test tests3[] = 
     { 
@@ -625,7 +690,7 @@ perfTestS3Connection()
 
     // Allocate a temp array to wait for completion.
 
-    std::vector< S3Connection *> cons;
+    std::vector< WsConnection *> cons;
     cons.resize( dimensionOf( s_cons ) );
     
     for( int i = 0; i < dimensionOf( s_cons ); ++i )
@@ -638,11 +703,10 @@ perfTestS3Connection()
     for( int o = 0; o < dimensionOf( objectSizes ); ++o )
     {
         size_t objectSize = objectSizes[ o ];
-        size_t isample = 0;
 
         // Iterate through all connection counts.
 
-        for( int c = 1; c <= dimensionOf( s_cons ); c *= 2 )
+        for( int c = 1; c <= dimensionOf( s_cons ); c *= 4 )
         {
             size_t putKeyCount = 0;
 
@@ -653,29 +717,28 @@ perfTestS3Connection()
                 TestFunc testPend = tests3[ t ].test;
                 TestFunc testComplete = tests3[ t ].testComplete;
 
-                // Prepare samples.
+                // Prepare sample distribution.
 
-                memset( s_samples, 0, sizeof( s_samples ) );
-                size_t isample = 0;
+                memset( s_distribution, 0, sizeof( s_distribution ) );
 
                 UInt64 conSamples[ dimensionOf( s_cons ) ] = {};
                 int conKeys[ dimensionOf( s_cons ) ] = {};
 
                 // Start async for all connections.
 
+                stopwatch.start();
                 int key = 0;
 
                 for( int k = 0; k < c; ++k, ++key )
                 {
-                   testPend( k, 0, key, objectSize );
-                   conKeys[ k ] = key;
+                    conSamples[ k ] = stopwatch.elapsed();
+                    testPend( k, 0, key, objectSize );
+                    conKeys[ k ] = key;
                 }
 
                 UInt64 total = 0;
                 UInt64 elapsed = 0;
                 UInt64 errors = 0;
-
-                stopwatch.start();
 
                 // Run the current test for the 'testDuration'.
 
@@ -694,7 +757,9 @@ perfTestS3Connection()
                     // the number of connections > 64 to wait on 64
                     // connections with a sliding window.
 
-                    int k = S3Connection::waitAny( &cons[ 0 ], c, key % c /* startFrom */ );
+                    CASSERT( dimensionOf( s_cons ) <= 64 );
+
+                    int k = WsConnection::waitAny( &cons[ 0 ], c, key % c /* startFrom */ );
                     dbgAssert( k >= 0 && k < c );
 
                     // Complete the current.
@@ -702,10 +767,7 @@ perfTestS3Connection()
                     if( testComplete( k, 0, conKeys[ k ], objectSize ) )
                     {
                         total += objectSize;
-
-                        elapsed = stopwatch.elapsed();
-                        appendSample( s_samples, dimensionOf( s_samples ), &isample, elapsed - conSamples[ k ] );
-                        conSamples[ k ] = elapsed;
+                        appendSample( s_distribution, dimensionOf( s_distribution ), stopwatch.elapsed() - conSamples[ k ] );
                     }
                     else
                     {
@@ -714,6 +776,7 @@ perfTestS3Connection()
 
                     // Start a new.
 
+                    conSamples[ k ] = stopwatch.elapsed();
                     testPend( k, 0, key, objectSize );
                     conKeys[ k ] = key;
                 }
@@ -729,12 +792,19 @@ perfTestS3Connection()
                 {
                     if( s_cons[ k ]->isAsyncPending() )
                     {
-                        testComplete( k, 0, conKeys[ k ], objectSize );
+                        if( testComplete( k, 0, conKeys[ k ], objectSize ) )
+                        {
+                            total += objectSize;
+                            appendSample( s_distribution, dimensionOf( s_distribution ), stopwatch.elapsed() - conSamples[ k ] );
+                        }
+                        else
+                        {
+                            errors++;
+                        }
                     }
                 }
 
-                dbgAssert( total <= objectSize * key ); // it can be less because we don't count objects 
-                                                        // after testDuration elapsed.
+                dbgAssert( total <= objectSize * key ); // can be less because we don't count errors
 
                 UInt64 bps = elapsed > 0 ? total * 1000ULL / elapsed : 0;  // bytes per second
                 UInt64 tps = bps / objectSize;
@@ -748,8 +818,8 @@ perfTestS3Connection()
                     << tps << '\t' 
                     << elapsed << '\t'
                     << errors << '\t'
-                    << putKeyCount;
-                print( testName.str().c_str(), s_samples, isample, false /* calcDiffs */ );
+                    << key;
+                print( testName.str().c_str(), s_distribution, dimensionOf( s_distribution ) );
 
                 taskSleep( s_cooldown );
             }
@@ -772,7 +842,7 @@ main( int argc, char **argv )
 
     try
     {
-        DBG_RUN_UNIT_TEST( perfTestS3Connection );
+        DBG_RUN_UNIT_TEST( perfTestWsConnection );
     }
     catch( const std::exception &e )
     {

@@ -46,19 +46,19 @@ LINKLIBS=libcurl.lib ssleay.lib	openssl.lib libxml2.lib
 
 CPPFLAGS=$(CPPFLAGS) $(DEFINES) $(INCLUDES)
 
-all: s3dbg.exe s3perf.exe s3test.exe
+all: wsdbg.exe wsperf.exe wscmd.exe
 
 clean:
-	del /f/q *.obj s3dbg.exe s3perf.exe s3test.exe webstor.lib
+	del /f/q *.obj wsdbg.exe wsperf.exe wscmd.exe webstor.lib
 
-s3dbg.exe: s3dbg.obj webstor.lib
+wsdbg.exe: wsdbg.obj webstor.lib
 	cl $(CPPFLAGS) -Fe$@ $** $(LINKLIBS) $(LIBPATHS)
 
-s3perf.exe: s3perf.obj webstor.lib
+wsperf.exe: wsperf.obj webstor.lib
 	cl $(CPPFLAGS) -Fe$@ $** $(LINKLIBS) $(LIBPATHS)
 
-s3test.exe: s3test.obj webstor.lib
+wscmd.exe: wscmd.obj webstor.lib
 	cl $(CPPFLAGS) -Fe$@ $** $(LINKLIBS) $(LIBPATHS)
 
-webstor.lib: asyncurl.obj s3conn.obj sysutils.obj
+webstor.lib: asyncurl.obj wsconn.obj sysutils.obj
 	lib /OUT:$@ $**

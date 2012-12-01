@@ -2,7 +2,7 @@
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
 <meta http-equiv="Content-Type" content="text/xhtml;charset=UTF-8"/>
-<title>WebStor: C++ library to access Amazon S3.</title>
+<title>WebStor: C++ library to access cloud storage.</title>
 <link href="tabs.css" rel="stylesheet" type="text/css"/>
 <link href="search/search.css" rel="stylesheet" type="text/css"/>
 <script type="text/javascript" src="search/search.js"></script>
@@ -23,7 +23,7 @@
   </tr>
   <tr>
       <td style="padding-left: 0.5em;">
-        <div id="projectbrief">High performance API for Amazon S3</div>
+        <div id="projectbrief">High performance API for cloud storage</div>
       </td>
   </tr>
 </table>

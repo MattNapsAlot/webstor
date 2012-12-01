@@ -18,10 +18,11 @@
 //          Artem Livshits <artem.livshits@gmail.com>
 
 //////////////////////////////////////////////////////////////////////////////
-// S3 connection.
+// WebStor connection.
 //////////////////////////////////////////////////////////////////////////////
 
-#include "s3conn.h"
+#include "wsconn.h"
+
 #include "sysutils.h"
 
 #define NOMINMAX
@@ -40,21 +41,22 @@ namespace webstor
 using namespace internal;
 
 //////////////////////////////////////////////////////////////////////////////
-// S3 errors.
+// WebStor errors.
 
 const static char errUnexpected[] = "Unexpected error." ;
 const static char errCurl[] = "%s.";
 const static char errHTTP[] = "%s.";
 const static char errHTTPResourceNotFound[] = "HTTP resource not found: %s."; 
 const static char errParser[] = "Cannot parse the response.";
-const static char errAWS[] = "%s (Code='%s', RequestId='%s')."; 
-const static char errS3Summary[] = "S3 %s for '%s' failed. %s";
+const static char errWsDetail[] = "%s (Code='%s', RequestId='%s')."; 
+const static char errOpSummary[] = "The '%s' operation for '%s' failed. %s";
 const static char errTooManyConnetions[] = "Too many connections passed to waitAny method.";
 
 //////////////////////////////////////////////////////////////////////////////
-// S3 statics.
+// WebStor statics.
 
-static const char s_defaultHost[] = "s3.amazonaws.com";
+static const char s_defaultS3Host[] = "s3.amazonaws.com";
+static const char s_defaultGcsHost[] = "commondatastorage.googleapis.com";
 static const char s_defaultWalrusPort[] = "8773";
 static const char s_CACertIgnore[] = "none";
 static const char s_contentTypeBinary[] = "application/octet-stream";
@@ -62,7 +64,7 @@ static const char s_contentTypeXml[] = "application/xml";
 
 // Default timeouts.
 
-// We need default timeouts, otherwise S3Connection may stuck forever if cable is unplugged or
+// We need default timeouts, otherwise WsConnection may stuck forever if cable is unplugged or
 // anything else happens stopping any activity on socket(s).
 
 static const UInt32 s_defaultTimeout = 120 * 1000;          // 2 mins
@@ -85,6 +87,11 @@ static const TcpKeepAliveParams s_tcpKeepAliveProbes =
 // Maximum socket send/receive buffer size.
 // This gives us: throughput = window_size / RTT = 1MB / 100 ms = 10 MB/s on one connection
 // Note: On Linux, the  kernel doubles this value for internal bookkeeping overhead.
+// Note: the OS may limit the buffer size according to the system-wide settings.  To
+// take advantage of high-bandwidth & high-latency network, the receive buffer size
+// must be large enough to support large TCP window sizes.  The default max value on
+// Linux (as of 2012/09/15) is 128 KB, which is too small.  The value is controlled
+// by /proc/sys/net/core/rmem_max which should be set to at least 2 MB.
 
 static const UInt32 s_socketBufferSize = 1024 * 1024;  // 1MB
 
@@ -192,6 +199,7 @@ static const char
         // * EU Ireland (s3-eu-west-1.amazonaws.com)
         // * Asia Pacific Singapore (s3-ap-southeast-1.amazonaws.com)
         // * Asia Pacific Tokyo (s3-ap-northeast-1.amazonaws.com)
+        // * South America (Sao Paulo) Region (s3-sa-east-1.amazonaws.com)
 
         "-----BEGIN CERTIFICATE-----\n"
         "MIIDxTCCAq2gAwIBAgIQAqxcJmoLQJuPC3nyrkYldzANBgkqhkiG9w0BAQUFADBsMQswCQYDVQQG\n"
@@ -212,6 +220,27 @@ static const char
         "mNEVX58Svnw2Yzi9RKR/5CYrCsSXaQ3pjOLAEFe4yHYSkVXySGnYvCoCWw9E1CAx2/S6cCZdkGCe\n"
         "vEsXCS+0yx5DaMkHJ8HSXPfqIbloEpw8nL+e/IBcm2PN7EeqJSdnoDfzAIJ9VNep+OkuE6N36B9K\n"
         "-----END CERTIFICATE-----",
+
+        // Equifax Secure CA
+        // * Google Cloud Storage (commondatastorage.googleapis.com)
+
+        "-----BEGIN CERTIFICATE-----\n"
+        "MIIDIDCCAomgAwIBAgIENd70zzANBgkqhkiG9w0BAQUFADBOMQswCQYDVQQGEwJVUzEQMA4GA1UE\n"
+        "ChMHRXF1aWZheDEtMCsGA1UECxMkRXF1aWZheCBTZWN1cmUgQ2VydGlmaWNhdGUgQXV0aG9yaXR5\n"
+        "MB4XDTk4MDgyMjE2NDE1MVoXDTE4MDgyMjE2NDE1MVowTjELMAkGA1UEBhMCVVMxEDAOBgNVBAoT\n"
+        "B0VxdWlmYXgxLTArBgNVBAsTJEVxdWlmYXggU2VjdXJlIENlcnRpZmljYXRlIEF1dGhvcml0eTCB\n"
+        "nzANBgkqhkiG9w0BAQEFAAOBjQAwgYkCgYEAwV2xWGcIYu6gmi0fCG2RFGiYCh7+2gRvE4RiIcPR\n"
+        "fM6fBeC4AfBONOziipUEZKzxa1NfBbPLZ4C/QgKO/t0BCezhABRP/PvwDN1Dulsr4R+AcJkVV5MW\n"
+        "8Q+XarfCaCMczE1ZMKxRHjuvK9buY0V7xdlfUNLjUA86iOe/FP3gx7kCAwEAAaOCAQkwggEFMHAG\n"
+        "A1UdHwRpMGcwZaBjoGGkXzBdMQswCQYDVQQGEwJVUzEQMA4GA1UEChMHRXF1aWZheDEtMCsGA1UE\n"
+        "CxMkRXF1aWZheCBTZWN1cmUgQ2VydGlmaWNhdGUgQXV0aG9yaXR5MQ0wCwYDVQQDEwRDUkwxMBoG\n"
+        "A1UdEAQTMBGBDzIwMTgwODIyMTY0MTUxWjALBgNVHQ8EBAMCAQYwHwYDVR0jBBgwFoAUSOZo+SvS\n"
+        "spXXR9gjIBBPM5iQn9QwHQYDVR0OBBYEFEjmaPkr0rKV10fYIyAQTzOYkJ/UMAwGA1UdEwQFMAMB\n"
+        "Af8wGgYJKoZIhvZ9B0EABA0wCxsFVjMuMGMDAgbAMA0GCSqGSIb3DQEBBQUAA4GBAFjOKer89961\n"
+        "zgK5F7WF0bnj4JXMJTENAKaSbn+2kmOeUJXRmm/kEd5jhW6Y7qj/WsjTVbJmcVfewCHrPSqnI0kB\n"
+        "BIZCe/zuf6IWUrVnZ9NA2zsmWLIodz2uFHdh1voqZiegDfqnc1zqcPGUIWVEX/r87yloqaKHee95\n"
+        "70+sB3c4\n"
+        "-----END CERTIFICATE-----\n",
 
         NULL
     };
@@ -404,7 +433,7 @@ appendSigHeader( const char *key, const char *value, std::string *ptoSign )
 static void
 calcSignature( const std::string &accKey, const std::string &secKey,
     const char *contentMd5, const char *contentType, const char *date, bool makePublic, bool srvEncrypt,
-    const char *action, const char *bucketName, const char *key, bool isWalrus, 
+    const char *action, const char *bucketName, const char *key, WsStorType storType, 
     std::string *signature )
 {
     dbgAssert( action );
@@ -431,7 +460,7 @@ calcSignature( const std::string &accKey, const std::string &secKey,
 
     // Add URL.
 
-    if( isWalrus )
+    if( storType == WST_WALRUS )
         toSign.append( STRING_WITH_LEN( "/services/Walrus" ) );
 
     if( bucketName )
@@ -505,7 +534,7 @@ appendRequestHeader( const char *key, const char *value, ScopedCurlList *plist )
 static void
 setRequestHeaders( const std::string &accKey, const std::string &secKey,
     const char *contentMd5, const char *contentType, bool makePublic, bool srvEncrypt,
-    const char *action, const char *bucketName, const char *key, bool isWalrus, 
+    const char *action, const char *bucketName, const char *key, WsStorType storType, 
     ScopedCurlList *plist )
 {
     dbgAssert( plist );
@@ -537,7 +566,7 @@ setRequestHeaders( const std::string &accKey, const std::string &secKey,
 
     calcSignature( accKey, secKey,
         contentMd5, contentType, date, makePublic, srvEncrypt,
-        action, bucketName, key, isWalrus,
+        action, bucketName, key, storType,
         &signature );
 
     // Set request headers.
@@ -588,9 +617,9 @@ setRequestHeaders( const std::string &accKey, const std::string &secKey,
 //////////////////////////////////////////////////////////////////////////////
 // Response loader to a given buffer.
 
-struct S3GetResponseBufferLoader : public S3GetResponseLoader
+struct WsGetResponseBufferLoader : public WsGetResponseLoader
 {
-                    S3GetResponseBufferLoader( void *buffer, size_t size );
+                    WsGetResponseBufferLoader( void *buffer, size_t size );
 
     size_t          onLoad( const void *chunkData, size_t chunkSize, size_t totalSizeHint ) ;
 
@@ -598,7 +627,7 @@ struct S3GetResponseBufferLoader : public S3GetResponseLoader
     size_t          left;
 };
 
-S3GetResponseBufferLoader::S3GetResponseBufferLoader( void *buffer, size_t size )
+WsGetResponseBufferLoader::WsGetResponseBufferLoader( void *buffer, size_t size )
     : p( buffer )
     , left( size )
 {
@@ -606,7 +635,7 @@ S3GetResponseBufferLoader::S3GetResponseBufferLoader( void *buffer, size_t size 
 }
 
 size_t 
-S3GetResponseBufferLoader::onLoad( const void *chunkData, size_t chunkSize, size_t totalSizeHint ) 
+WsGetResponseBufferLoader::onLoad( const void *chunkData, size_t chunkSize, size_t totalSizeHint ) 
 {
     if( !left )
     {
@@ -627,9 +656,9 @@ S3GetResponseBufferLoader::onLoad( const void *chunkData, size_t chunkSize, size
 //////////////////////////////////////////////////////////////////////////////
 // Request uploader from a given buffer.
 
-struct S3PutRequestBufferUploader : public S3PutRequestUploader
+struct WsPutRequestBufferUploader : public WsPutRequestUploader
 {
-    S3PutRequestBufferUploader( const void *_buffer, size_t _size );
+    WsPutRequestBufferUploader( const void *_buffer, size_t _size );
 
     void            setUpload( const void *_buffer, size_t _size );
     virtual size_t  onUpload( void *chunkBuf, size_t chunkSize );
@@ -639,7 +668,7 @@ struct S3PutRequestBufferUploader : public S3PutRequestUploader
     size_t          offset;
 };
 
-S3PutRequestBufferUploader::S3PutRequestBufferUploader( const void *_buffer, size_t _size )
+WsPutRequestBufferUploader::WsPutRequestBufferUploader( const void *_buffer, size_t _size )
     : buffer( _buffer ) 
     , size( _size )
     , offset( 0 )
@@ -647,7 +676,7 @@ S3PutRequestBufferUploader::S3PutRequestBufferUploader( const void *_buffer, siz
 }
 
 void 
-S3PutRequestBufferUploader::setUpload( const void *_buffer, size_t _size )
+WsPutRequestBufferUploader::setUpload( const void *_buffer, size_t _size )
 {
     dbgAssert( implies( size, buffer ) );
     buffer = _buffer;
@@ -656,7 +685,7 @@ S3PutRequestBufferUploader::setUpload( const void *_buffer, size_t _size )
 }
 
 size_t  
-S3PutRequestBufferUploader::onUpload( void *chunkBuf, size_t chunkSize )
+WsPutRequestBufferUploader::onUpload( void *chunkBuf, size_t chunkSize )
 {
     if( !size )
     {
@@ -678,21 +707,21 @@ S3PutRequestBufferUploader::onUpload( void *chunkBuf, size_t chunkSize )
 //////////////////////////////////////////////////////////////////////////////
 // Response handling.
 
-enum S3_RESPONSE_STATUS
+enum WS_RESPONSE_STATUS
 {
-    S3_RESPONSE_STATUS_UNEXPECTED = -1,
-    S3_RESPONSE_STATUS_SUCCESS,
-    S3_RESPONSE_STATUS_FAILURE_WITH_DETAILS,
-    S3_RESPONSE_STATUS_HTTP_FAILURE,
-    S3_RESPONSE_STATUS_HTTP_RESOURSE_NOT_FOUND,
-    S3_RESPONSE_STATUS_HTTP_OR_AWS_FAILURE,
+    WS_RESPONSE_STATUS_UNEXPECTED = -1,
+    WS_RESPONSE_STATUS_SUCCESS,
+    WS_RESPONSE_STATUS_FAILURE_WITH_DETAILS,
+    WS_RESPONSE_STATUS_HTTP_FAILURE,
+    WS_RESPONSE_STATUS_HTTP_RESOURSE_NOT_FOUND,
+    WS_RESPONSE_STATUS_HTTP_OR_WS_FAILURE,
 };
 
-struct S3ResponseDetails
+struct WsResponseDetails
 {
-                    S3ResponseDetails();
+                    WsResponseDetails();
 
-    S3_RESPONSE_STATUS status;
+    WS_RESPONSE_STATUS status;
     std::string     url;
     std::string     name;
                        
@@ -720,21 +749,21 @@ struct S3ResponseDetails
     size_t          loadedContentLength;
 };
 
-S3ResponseDetails::S3ResponseDetails()
-    : status( S3_RESPONSE_STATUS_UNEXPECTED )
+WsResponseDetails::WsResponseDetails()
+    : status( WS_RESPONSE_STATUS_UNEXPECTED )
     , httpContentLength( -1 ) 
     , isTruncated( false )
     , loadedContentLength( 0 )
 {}
 
 //////////////////////////////////////////////////////////////////////////////
-// S3 exception.
+// WebStor exception.
 
-class S3Exception : public std::exception
+class WsException : public std::exception
 {
 public:
-                    S3Exception( const char *fmt, ... );
-    virtual         ~S3Exception() throw() {}
+                    WsException( const char *fmt, ... );
+    virtual         ~WsException() throw() {}
     virtual const char * what() const throw();
 
 protected:
@@ -775,7 +804,7 @@ protected:
     // Saved error. We need this to ensure 'nofail' behavior in callbacks that cannot throw
     // and to marshal the error between threads in async case.
 
-    std::auto_ptr< S3Exception > m_error;
+    std::auto_ptr< WsException > m_error;
     bool            m_is_bad_alloc;
 };
 
@@ -831,11 +860,11 @@ Request::saveIfCurlError( CURLcode curlCode )
             // Null terminate the errDetails.
 
             m_curlErrorDetails[ m_curlErrorDetailsSize - 1 ] = '\0';  // null terminate.
-            m_error.reset( new S3Exception( errCurl, m_curlErrorDetails ) );
+            m_error.reset( new WsException( errCurl, m_curlErrorDetails ) );
         }
         else
         {
-            m_error.reset( new S3Exception( errCurl, curl_easy_strerror( curlCode ) ) );
+            m_error.reset( new WsException( errCurl, curl_easy_strerror( curlCode ) ) );
         }
 
     }
@@ -872,11 +901,11 @@ Request::saveError()
         }
         catch( const std::exception &e )
         {
-            m_error.reset( new S3Exception( e.what() ) );
+            m_error.reset( new WsException( e.what() ) );
         }
         catch( ... )
         {
-            m_error.reset( new S3Exception( errUnexpected ) );
+            m_error.reset( new WsException( errUnexpected ) );
         }
     }
     catch( const std::bad_alloc & )
@@ -886,34 +915,34 @@ Request::saveError()
 }
 
 //////////////////////////////////////////////////////////////////////////////
-// S3 response Xml nodes.
+// WebStor response Xml nodes.
 // Values are sorted and order between enums and strings must match.
 
-enum S3_RESPONSE_NODE
+enum WS_RESPONSE_NODE
 {
-    S3_RESPONSE_NODE_BUCKET,
-    S3_RESPONSE_NODE_CODE,
-    S3_RESPONSE_NODE_COMMON_PREFIXES,
-    S3_RESPONSE_NODE_CONTENTS,
-    S3_RESPONSE_NODE_CREATION_DATE,
-    S3_RESPONSE_NODE_ETAG,
-    S3_RESPONSE_NODE_ERROR,
-    S3_RESPONSE_NODE_HOST_ID,
-    S3_RESPONSE_NODE_IS_TRUNCATED, 
-    S3_RESPONSE_NODE_KEY,
-    S3_RESPONSE_NODE_LAST_MODIFIED,
-    S3_RESPONSE_NODE_MESSAGE,
-    S3_RESPONSE_NODE_NAME,
-    S3_RESPONSE_NODE_NEXT_MARKER,
-    S3_RESPONSE_NODE_PREFIX,
-    S3_RESPONSE_NODE_REQUEST_ID,
-    S3_RESPONSE_NODE_SIZE,
-    S3_RESPONSE_NODE_UPLOAD,
-    S3_RESPONSE_NODE_UPLOAD_ID,
-    S3_RESPONSE_NODE_LAST
+    WS_RESPONSE_NODE_BUCKET,
+    WS_RESPONSE_NODE_CODE,
+    WS_RESPONSE_NODE_COMMON_PREFIXES,
+    WS_RESPONSE_NODE_CONTENTS,
+    WS_RESPONSE_NODE_CREATION_DATE,
+    WS_RESPONSE_NODE_ETAG,
+    WS_RESPONSE_NODE_ERROR,
+    WS_RESPONSE_NODE_HOST_ID,
+    WS_RESPONSE_NODE_IS_TRUNCATED, 
+    WS_RESPONSE_NODE_KEY,
+    WS_RESPONSE_NODE_LAST_MODIFIED,
+    WS_RESPONSE_NODE_MESSAGE,
+    WS_RESPONSE_NODE_NAME,
+    WS_RESPONSE_NODE_NEXT_MARKER,
+    WS_RESPONSE_NODE_PREFIX,
+    WS_RESPONSE_NODE_REQUEST_ID,
+    WS_RESPONSE_NODE_SIZE,
+    WS_RESPONSE_NODE_UPLOAD,
+    WS_RESPONSE_NODE_UPLOAD_ID,
+    WS_RESPONSE_NODE_LAST
 };
 
-static StringWithLen s_S3ResponseNodeStrings[] =
+static StringWithLen s_wsResponseNodeStrings[] =
 {
     { STRING_WITH_LEN( "Bucket" ) },
     { STRING_WITH_LEN( "Code" ) },
@@ -936,24 +965,24 @@ static StringWithLen s_S3ResponseNodeStrings[] =
     { STRING_WITH_LEN( "UploadId" ) },
 };
 
-CASSERT( dimensionOf( s_S3ResponseNodeStrings ) == S3_RESPONSE_NODE_LAST );
+CASSERT( dimensionOf( s_wsResponseNodeStrings ) == WS_RESPONSE_NODE_LAST );
 
 //////////////////////////////////////////////////////////////////////////////
-// S3 operation request handling.
+// WebStor operation request handling.
 
-class S3Request : public Request
+class WsRequest : public Request
 {
 public:
-                    S3Request( const char *name = NULL );
-    virtual         ~S3Request();
+                    WsRequest( const char *name = NULL );
+    virtual         ~WsRequest();
 
     // Sync execution.
 
-    S3ResponseDetails &execute(); 
+    WsResponseDetails &execute(); 
 
     // Complete request.
 
-    S3ResponseDetails &complete( CURLcode curlCode );
+    WsResponseDetails &complete( CURLcode curlCode );
 
     // Misc properties.
 
@@ -968,7 +997,7 @@ public:
 protected:
     
     // Override in derived class if you need to customize response payload parsing for
-    // a specific S3 operation.
+    // a specific WebStor operation.
 
     virtual size_t  onLoadBinary( const void *chunkData, size_t chunkSize, size_t totalSizeHint ) { return chunkSize; }
     virtual size_t  onUploadBinary( void *chunkBuf, size_t chunkSize ) { return 0; }
@@ -981,7 +1010,7 @@ protected:
     virtual const char *onHttpVerb() = 0;
 
 protected:
-    void            throwXmlParserError() { throw S3Exception( errParser ); }
+    void            throwXmlParserError() { throw WsException( errParser ); }
 
 private:
     static size_t   handleHeader( const void *headerData, size_t count, size_t elementSize, void *ctx ); // nofail
@@ -1013,12 +1042,12 @@ protected:
 
     xmlSAXHandler   m_parser;
     xmlParserCtxtPtr m_ctx;
-    S3_RESPONSE_NODE m_stack[ 8 ];
+    WS_RESPONSE_NODE m_stack[ 8 ];
     unsigned int    m_stackTop;
 
     // Request response.
 
-    S3ResponseDetails  m_responseDetails;
+    WsResponseDetails  m_responseDetails;
 };
 
 static bool 
@@ -1027,7 +1056,7 @@ strless( const StringWithLen &v1, const StringWithLen &v2 )
     return strcmp( v1.str, v2.str ) < 0; 
 }
 
-static S3_RESPONSE_NODE
+static WS_RESPONSE_NODE
 getResponseNode( const char *nodeName )
 {
     dbgAssert( nodeName );
@@ -1038,16 +1067,16 @@ getResponseNode( const char *nodeName )
 
         if( !s_dbgChecked )
         {
-            for( size_t i = 1; i < S3_RESPONSE_NODE_LAST; ++i )
-                dbgAssert( strcmp( s_S3ResponseNodeStrings[ i-1 ].str, s_S3ResponseNodeStrings[ i ].str ) < 0 );
+            for( size_t i = 1; i < WS_RESPONSE_NODE_LAST; ++i )
+                dbgAssert( strcmp( s_wsResponseNodeStrings[ i-1 ].str, s_wsResponseNodeStrings[ i ].str ) < 0 );
 
             s_dbgChecked = true;
         }
     }
 #endif  // DEBUG
 
-    StringWithLen *first = &s_S3ResponseNodeStrings[ 0 ];
-    StringWithLen *last = &s_S3ResponseNodeStrings[ S3_RESPONSE_NODE_LAST ];
+    StringWithLen *first = &s_wsResponseNodeStrings[ 0 ];
+    StringWithLen *last = &s_wsResponseNodeStrings[ WS_RESPONSE_NODE_LAST ];
     StringWithLen search = { nodeName, 0 /* not used */ };
     StringWithLen *it = std::lower_bound( first, last, search, strless );
     
@@ -1055,12 +1084,12 @@ getResponseNode( const char *nodeName )
     {
         // Not found.
 
-        return S3_RESPONSE_NODE_LAST;
+        return WS_RESPONSE_NODE_LAST;
     }
 
     // Return the node index.
 
-    return static_cast< S3_RESPONSE_NODE >( it - first );
+    return static_cast< WS_RESPONSE_NODE >( it - first );
 };
 
 
@@ -1105,7 +1134,7 @@ startsWith( const char *p, size_t size, const char *prefix, size_t prefixLen,
     return size >= prefixLen && !strncmp( p, prefix, prefixLen );
 }
 
-S3Request::S3Request( const char *name )
+WsRequest::WsRequest( const char *name )
     : m_responseDetails()
     , m_ctx( NULL )
     , m_stackTop( 0 )
@@ -1119,7 +1148,7 @@ S3Request::S3Request( const char *name )
 }
 
 void
-S3Request::onPrepare( CURL *curl )
+WsRequest::onPrepare( CURL *curl )
 {
     curl_easy_setopt_checked( curl, CURLOPT_HEADERFUNCTION, handleHeader );
     curl_easy_setopt_checked( curl, CURLOPT_WRITEHEADER, this );
@@ -1129,7 +1158,7 @@ S3Request::onPrepare( CURL *curl )
 }
 
 void
-S3Request::setUrl( const char *url ) 
+WsRequest::setUrl( const char *url ) 
 { 
     dbgAssert( url ); 
     m_responseDetails.url.assign( url ); 
@@ -1137,15 +1166,15 @@ S3Request::setUrl( const char *url )
 }
 
 
-S3Request::~S3Request()
+WsRequest::~WsRequest()
 {
     // Free the parser.
 
     xmlFreeParserCtxt ( m_ctx );  // it handles nulls.
 }
 
-S3ResponseDetails &
-S3Request::execute()
+WsResponseDetails &
+WsRequest::execute()
 {
     dbgAssert( !m_responseDetails.url.empty() ); 
 
@@ -1153,8 +1182,8 @@ S3Request::execute()
     return complete( curlCode );
 }
 
-S3ResponseDetails &
-S3Request::complete( CURLcode curlCode )
+WsResponseDetails &
+WsRequest::complete( CURLcode curlCode )
 {
     saveIfCurlError( curlCode );
 
@@ -1177,39 +1206,39 @@ S3Request::complete( CURLcode curlCode )
 }
 
 size_t
-S3Request::handleHeader( const void *headerData, size_t count, 
+WsRequest::handleHeader( const void *headerData, size_t count, 
     size_t elementSize, void *ctx ) // nofail
 {
-    S3Request *state = static_cast< S3Request * >( ctx );
+    WsRequest *state = static_cast< WsRequest * >( ctx );
     return state->handleHeader_( headerData, count, elementSize ); // nofail
 }
 
 size_t
-S3Request::handleXmlPayload( const void *chunkData, size_t count,
+WsRequest::handleXmlPayload( const void *chunkData, size_t count,
     size_t elementSize, void *ctx ) // nofail
 {
-    S3Request *state = static_cast< S3Request * >( ctx );
+    WsRequest *state = static_cast< WsRequest * >( ctx );
     return state->handleXmlPayload_( chunkData, count, elementSize ); // nofail
 }
 
 size_t
-S3Request::handleBinaryLoad( const void *chunkData, size_t count, 
+WsRequest::handleBinaryLoad( const void *chunkData, size_t count, 
     size_t elementSize, void *ctx ) // nofail
 {
-    S3Request *state = static_cast< S3Request * >( ctx );
+    WsRequest *state = static_cast< WsRequest * >( ctx );
     return state->handleBinaryLoad_( chunkData, count, elementSize ); // nofail
 }
 
 size_t
-S3Request::handleBinaryUpload( void *chunkBuf, size_t count, 
+WsRequest::handleBinaryUpload( void *chunkBuf, size_t count, 
     size_t elementSize, void *ctx ) // nofail
 {
-    S3Request *state = static_cast< S3Request * >( ctx );
+    WsRequest *state = static_cast< WsRequest * >( ctx );
     return state->handleBinaryUpload_( chunkBuf, count, elementSize ); // nofail
 }
 
 size_t
-S3Request::handleHeader_( const void *headerData, 
+WsRequest::handleHeader_( const void *headerData, 
     size_t count, size_t memberSize ) // nofail
 {
     try
@@ -1254,16 +1283,16 @@ S3Request::handleHeader_( const void *headerData,
             if( startsWith( p, size, STRING_WITH_LEN( "200 OK" ) ) || 
                 startsWith( p, size, STRING_WITH_LEN( "204 No Content" ) ) ) 
             {
-                m_responseDetails.status = S3_RESPONSE_STATUS_SUCCESS;
+                m_responseDetails.status = WS_RESPONSE_STATUS_SUCCESS;
             }
             else if( startsWith( p, size, STRING_WITH_LEN( "404 Not" ) ) )
             {
-                // AWS/Walrus services may return 404 if the resource is not found with xml
+                // Cloud storage services may return 404 if the resource is not found with xml
                 // body containing more details about the error. So we may retrieve more details
                 // about this case and this error may be promoted to
-                // S3_RESPONSE_STATUS_FAILURE_WITH_DETAILS later.
+                // WS_RESPONSE_STATUS_FAILURE_WITH_DETAILS later.
 
-                m_responseDetails.status = S3_RESPONSE_STATUS_HTTP_RESOURSE_NOT_FOUND;
+                m_responseDetails.status = WS_RESPONSE_STATUS_HTTP_RESOURSE_NOT_FOUND;
             } 
             else if( startsWith( p, size, STRING_WITH_LEN( "301 Moved" ) ) ||
                 startsWith( p, size, STRING_WITH_LEN( "400 Bad" ) ) ||
@@ -1275,13 +1304,13 @@ S3Request::handleHeader_( const void *headerData,
             {
                 // Try to read detailed error info from the payload.
                 // This error may be promoted to
-                // S3_RESPONSE_STATUS_FAILURE_WITH_DETAILS later.
+                // WS_RESPONSE_STATUS_FAILURE_WITH_DETAILS later.
 
-                m_responseDetails.status = S3_RESPONSE_STATUS_HTTP_OR_AWS_FAILURE;
+                m_responseDetails.status = WS_RESPONSE_STATUS_HTTP_OR_WS_FAILURE;
             } 
             else
             {
-                m_responseDetails.status = S3_RESPONSE_STATUS_HTTP_FAILURE;
+                m_responseDetails.status = WS_RESPONSE_STATUS_HTTP_FAILURE;
             }
 
             // Set up the corresponding body loader.
@@ -1352,14 +1381,14 @@ S3Request::handleHeader_( const void *headerData,
 
 
 size_t
-S3Request::handleXmlPayload_( const void *chunkData, size_t count, size_t memberSize ) // nofail
+WsRequest::handleXmlPayload_( const void *chunkData, size_t count, size_t memberSize ) // nofail
 {
     try
     {
         if( !m_ctx && 
-            ( m_responseDetails.status == S3_RESPONSE_STATUS_SUCCESS ||
-            m_responseDetails.status == S3_RESPONSE_STATUS_HTTP_RESOURSE_NOT_FOUND ) ||
-            m_responseDetails.status == S3_RESPONSE_STATUS_HTTP_OR_AWS_FAILURE ) 
+            ( m_responseDetails.status == WS_RESPONSE_STATUS_SUCCESS ||
+            m_responseDetails.status == WS_RESPONSE_STATUS_HTTP_RESOURSE_NOT_FOUND ) ||
+            m_responseDetails.status == WS_RESPONSE_STATUS_HTTP_OR_WS_FAILURE ) 
         {
             // Create the SAX parser.
 
@@ -1394,7 +1423,7 @@ S3Request::handleXmlPayload_( const void *chunkData, size_t count, size_t member
 }
 
 size_t
-S3Request::handleBinaryLoad_( const void *chunkData, size_t count, 
+WsRequest::handleBinaryLoad_( const void *chunkData, size_t count, 
     size_t elementSize ) // nofail
 {
     size_t loaded = 0;
@@ -1424,7 +1453,7 @@ S3Request::handleBinaryLoad_( const void *chunkData, size_t count,
 }
 
 size_t
-S3Request::handleBinaryUpload_( void *chunkBuf, size_t count, 
+WsRequest::handleBinaryUpload_( void *chunkBuf, size_t count, 
     size_t elementSize ) // nofail
 {
     size_t uploaded = 0;
@@ -1443,39 +1472,39 @@ S3Request::handleBinaryUpload_( void *chunkBuf, size_t count,
 }
 
 void
-S3Request::startXmlElement( void *ctx, const xmlChar *localName, 
+WsRequest::startXmlElement( void *ctx, const xmlChar *localName, 
     const xmlChar *prefix, const xmlChar *uri, 
     int cNamespaces, const xmlChar **pNamespaces,
     int cAttributes, int defaulted, const xmlChar **pAttributes ) 
 {
-    S3Request *state = static_cast< S3Request * > ( ctx );
+    WsRequest *state = static_cast< WsRequest * > ( ctx );
     state->startXmlElementImpl( localName );
 }
 
 void
-S3Request::setXmlValue( void *ctx, const xmlChar *value, int len ) 
+WsRequest::setXmlValue( void *ctx, const xmlChar *value, int len ) 
 {
-    S3Request *state = static_cast< S3Request * > ( ctx );
+    WsRequest *state = static_cast< WsRequest * > ( ctx );
     state->setXmlValueImpl( value, len );
 }
 
 void
-S3Request::endXmlElement( void *ctx, const xmlChar *localName, 
+WsRequest::endXmlElement( void *ctx, const xmlChar *localName, 
     const xmlChar *prefix, const xmlChar *uri )
 {
-    S3Request *state = static_cast< S3Request * > ( ctx );
+    WsRequest *state = static_cast< WsRequest * > ( ctx );
     state->endXmlElementImpl();
 }
 
 void
-S3Request::startXmlElementImpl( const xmlChar *localName ) 
+WsRequest::startXmlElementImpl( const xmlChar *localName ) 
 {
     if( m_stackTop >= dimensionOf( m_stack ) )
     {
         throwXmlParserError();
     }
 
-    S3_RESPONSE_NODE node = getResponseNode( reinterpret_cast< const char* >( localName ) );
+    WS_RESPONSE_NODE node = getResponseNode( reinterpret_cast< const char* >( localName ) );
     m_stack[ m_stackTop++ ] = node;
 
     if( !onStartXmlElement() )
@@ -1485,36 +1514,36 @@ S3Request::startXmlElementImpl( const xmlChar *localName )
 }
 
 void
-S3Request::setXmlValueImpl( const xmlChar *value, int len ) 
+WsRequest::setXmlValueImpl( const xmlChar *value, int len ) 
 {
     // Handle common errors.
 
     const char * p = reinterpret_cast< const char * >( value );
 
-    if( m_stackTop == 2 && m_stack[ 0 ] == S3_RESPONSE_NODE_ERROR )
+    if( m_stackTop == 2 && m_stack[ 0 ] == WS_RESPONSE_NODE_ERROR )
     {
         switch( m_stack[ 1 ] )
         {
-        case S3_RESPONSE_NODE_CODE:
+        case WS_RESPONSE_NODE_CODE:
             m_responseDetails.errorCode.assign( p, len );
             break;
-        case S3_RESPONSE_NODE_MESSAGE:
+        case WS_RESPONSE_NODE_MESSAGE:
             m_responseDetails.errorMessage.assign( p, len );
             break;
-        case S3_RESPONSE_NODE_REQUEST_ID:
+        case WS_RESPONSE_NODE_REQUEST_ID:
             m_responseDetails.requestId.assign( p, len );
             break;
-        case S3_RESPONSE_NODE_HOST_ID:
+        case WS_RESPONSE_NODE_HOST_ID:
             m_responseDetails.hostId.assign( p, len );
             break;
         }
 
-        if( m_responseDetails.status == S3_RESPONSE_STATUS_HTTP_RESOURSE_NOT_FOUND ||
-            m_responseDetails.status == S3_RESPONSE_STATUS_HTTP_OR_AWS_FAILURE )
+        if( m_responseDetails.status == WS_RESPONSE_STATUS_HTTP_RESOURSE_NOT_FOUND ||
+            m_responseDetails.status == WS_RESPONSE_STATUS_HTTP_OR_WS_FAILURE )
         {
             // Promote to more detailed error.
 
-            m_responseDetails.status = S3_RESPONSE_STATUS_FAILURE_WITH_DETAILS;
+            m_responseDetails.status = WS_RESPONSE_STATUS_FAILURE_WITH_DETAILS;
         }
     }
 
@@ -1525,7 +1554,7 @@ S3Request::setXmlValueImpl( const xmlChar *value, int len )
 }
 
 void
-S3Request::endXmlElementImpl( )
+WsRequest::endXmlElementImpl( )
 {
     if( !m_stackTop || !onEndXmlElement() )
     {
@@ -1537,9 +1566,9 @@ S3Request::endXmlElementImpl( )
 }
 
 void
-S3Request::setPayloadHandler()
+WsRequest::setPayloadHandler()
 {
-    if( m_responseDetails.status == S3_RESPONSE_STATUS_SUCCESS )
+    if( m_responseDetails.status == WS_RESPONSE_STATUS_SUCCESS )
     {
         // Some requests expect to get structured data in XML format;
         // others get raw data.
@@ -1548,7 +1577,7 @@ S3Request::setPayloadHandler()
         curl_easy_setopt_checked( m_curl, CURLOPT_WRITEDATA, this );
     }
     else if( m_responseDetails.httpContentLength != 0 &&
-        !strcmp( m_responseDetails.httpContentType.c_str(), s_contentTypeXml ) )
+        strstr( m_responseDetails.httpContentType.c_str(), s_contentTypeXml ) )
     {
         // Error conditions may have details in XML.
 
@@ -1560,57 +1589,57 @@ S3Request::setPayloadHandler()
 //////////////////////////////////////////////////////////////////////////////
 // Response handling for 'get' operation.
 
-class S3GetRequest : public S3Request
+class WsGetRequest : public WsRequest
 {
 public:
-                    S3GetRequest( const char *name, S3GetResponseLoader *loader );
-                    S3GetRequest( const char *name, void *buffer, size_t size );
+                    WsGetRequest( const char *name, WsGetResponseLoader *loader );
+                    WsGetRequest( const char *name, void *buffer, size_t size );
 
 private:
     virtual size_t  onLoadBinary( const void *chunkData, size_t chunkSize, size_t totalSizeHint );
     virtual void    onPrepare( CURL *curl );
     virtual const char *onHttpVerb() { return "GET"; }
 
-    S3GetResponseBufferLoader m_builtinLoader;
-    S3GetResponseLoader *m_loader;
+    WsGetResponseBufferLoader m_builtinLoader;
+    WsGetResponseLoader *m_loader;
 };
 
-S3GetRequest::S3GetRequest( const char *name, S3GetResponseLoader *loader )
-    : S3Request( name )
+WsGetRequest::WsGetRequest( const char *name, WsGetResponseLoader *loader )
+    : WsRequest( name )
     , m_builtinLoader( NULL, 0 )
     , m_loader( loader )
 {
 }
 
-S3GetRequest::S3GetRequest( const char *name, void *buffer, size_t size )
-    : S3Request( name )
+WsGetRequest::WsGetRequest( const char *name, void *buffer, size_t size )
+    : WsRequest( name )
     , m_builtinLoader( buffer, size )
     , m_loader( &m_builtinLoader )
 {
 }
 
 size_t  
-S3GetRequest::onLoadBinary( const void *chunkData, size_t chunkSize, size_t totalSizeHint )
+WsGetRequest::onLoadBinary( const void *chunkData, size_t chunkSize, size_t totalSizeHint )
 {
     return m_loader->onLoad( chunkData, chunkSize, totalSizeHint );
 }
 
 void 
-S3GetRequest::onPrepare( CURL *curl )
+WsGetRequest::onPrepare( CURL *curl )
 {
-    S3Request::onPrepare( curl );
+    WsRequest::onPrepare( curl );
     curl_easy_setopt_checked( curl, CURLOPT_HTTPGET, 1 );
 }
 
 //////////////////////////////////////////////////////////////////////////////
 // Response handling for 'put' operation.
 
-class S3PutRequest : public S3Request
+class WsPutRequest : public WsRequest
 {
 public:
-                    S3PutRequest( const char *name, S3PutRequestUploader *uploader,
+                    WsPutRequest( const char *name, WsPutRequestUploader *uploader,
                         size_t totalSize );
-                    S3PutRequest( const char *name, const void *data = NULL, size_t size = 0 );
+                    WsPutRequest( const char *name, const void *data = NULL, size_t size = 0 );
 
     void            setUpload( const void *data, size_t size );
 
@@ -1619,23 +1648,23 @@ private:
     virtual void    onPrepare( CURL *curl );
     virtual const char *onHttpVerb() { return "PUT"; }
 
-    S3PutRequestBufferUploader m_builtinUploader;
-    S3PutRequestUploader *m_uploader;
+    WsPutRequestBufferUploader m_builtinUploader;
+    WsPutRequestUploader *m_uploader;
     size_t          m_totalSize;
 };
 
 
-S3PutRequest::S3PutRequest( const char *name, S3PutRequestUploader *uploader,
+WsPutRequest::WsPutRequest( const char *name, WsPutRequestUploader *uploader,
                             size_t totalSize )
-    : S3Request( name )
+    : WsRequest( name )
     , m_builtinUploader( NULL, 0 )
     , m_uploader( uploader )
     , m_totalSize( totalSize )
 {
 }
 
-S3PutRequest::S3PutRequest( const char *name, const void *data, size_t size )
-    : S3Request( name )
+WsPutRequest::WsPutRequest( const char *name, const void *data, size_t size )
+    : WsRequest( name )
     , m_builtinUploader( data, size )
     , m_uploader( &m_builtinUploader )
     , m_totalSize( size )
@@ -1643,13 +1672,13 @@ S3PutRequest::S3PutRequest( const char *name, const void *data, size_t size )
 }
 
 size_t
-S3PutRequest::onUploadBinary( void *chunkBuf, size_t chunkSize )
+WsPutRequest::onUploadBinary( void *chunkBuf, size_t chunkSize )
 {
      return m_uploader->onUpload( chunkBuf, chunkSize );
 }
 
 void
-S3PutRequest::setUpload( const void *data, size_t size )
+WsPutRequest::setUpload( const void *data, size_t size )
 {
     dbgAssert( m_curl );
     dbgAssert( &m_builtinUploader == m_uploader );
@@ -1660,9 +1689,9 @@ S3PutRequest::setUpload( const void *data, size_t size )
 }
 
 void
-S3PutRequest::onPrepare( CURL *curl )
+WsPutRequest::onPrepare( CURL *curl )
 {
-    S3Request::onPrepare( curl );
+    WsRequest::onPrepare( curl );
     curl_easy_setopt_checked( curl, CURLOPT_INFILESIZE, m_totalSize );
     curl_easy_setopt_checked( curl, CURLOPT_UPLOAD, 1 );
 }
@@ -1670,34 +1699,34 @@ S3PutRequest::onPrepare( CURL *curl )
 //////////////////////////////////////////////////////////////////////////////
 // Response handling for 'del' operation.
 
-class S3DelRequest: public S3Request
+class WsDelRequest: public WsRequest
 {
 public:
-                    S3DelRequest( const char *name = NULL );
+                    WsDelRequest( const char *name = NULL );
 private:
     virtual void    onPrepare( CURL *curl );
     virtual const char *onHttpVerb() { return "DELETE"; }
 };
 
-S3DelRequest::S3DelRequest( const char *name )
-    : S3Request( name )
+WsDelRequest::WsDelRequest( const char *name )
+    : WsRequest( name )
 {
 }
 
 void
-S3DelRequest::onPrepare( CURL *curl )
+WsDelRequest::onPrepare( CURL *curl )
 {
-    S3Request::onPrepare( curl );
+    WsRequest::onPrepare( curl );
     curl_easy_setopt_checked( m_curl, CURLOPT_CUSTOMREQUEST, httpVerb() );
 }
 
 //////////////////////////////////////////////////////////////////////////////
 // Response handling for 'listObjects' operation.
 
-class S3ListBucketsRequest : public S3Request
+class WsListBucketsRequest : public WsRequest
 {
 public:
-                    S3ListBucketsRequest( std::vector< S3Bucket > *buckets );
+                    WsListBucketsRequest( std::vector< WsBucket > *buckets );
 
 private:
     virtual bool    onExpectXmlPayload() const { return true; }
@@ -1711,20 +1740,20 @@ private:
 private:
     bool            isBucketNode();
     
-    S3Bucket        m_current;
-    std::vector< S3Bucket > *m_buckets;
+    WsBucket        m_current;
+    std::vector< WsBucket > *m_buckets;
 };
 
 
-S3ListBucketsRequest::S3ListBucketsRequest( std::vector< S3Bucket > *buckets )
-    : S3Request()
+WsListBucketsRequest::WsListBucketsRequest( std::vector< WsBucket > *buckets )
+    : WsRequest()
     , m_buckets( buckets )
 {
     dbgAssert( buckets );
 }
 
 bool    
-S3ListBucketsRequest::onStartXmlElement() 
+WsListBucketsRequest::onStartXmlElement() 
 { 
     if( isBucketNode() )
     {
@@ -1735,7 +1764,7 @@ S3ListBucketsRequest::onStartXmlElement()
 }
 
 bool
-S3ListBucketsRequest::onEndXmlElement() 
+WsListBucketsRequest::onEndXmlElement() 
 { 
     if( isBucketNode() )
     {
@@ -1746,7 +1775,7 @@ S3ListBucketsRequest::onEndXmlElement()
 }
 
 bool
-S3ListBucketsRequest::onSetXmlValue( const char *value, int len ) 
+WsListBucketsRequest::onSetXmlValue( const char *value, int len ) 
 {
     if( m_stackTop < 3 )
     {
@@ -1755,11 +1784,11 @@ S3ListBucketsRequest::onSetXmlValue( const char *value, int len )
 
     switch( m_stack[ m_stackTop - 1 ] )
     {
-    case S3_RESPONSE_NODE_NAME:
+    case WS_RESPONSE_NODE_NAME:
         m_current.name.assign( value, len );
         break;
 
-    case S3_RESPONSE_NODE_CREATION_DATE:
+    case WS_RESPONSE_NODE_CREATION_DATE:
         m_current.creationDate.assign( value, len );
         break;
     }
@@ -1768,16 +1797,16 @@ S3ListBucketsRequest::onSetXmlValue( const char *value, int len )
 }
 
 bool
-S3ListBucketsRequest::isBucketNode()
+WsListBucketsRequest::isBucketNode()
 {
     return ( m_stackTop == 3 || m_stackTop == 4 ) && 
-        ( m_stack[ m_stackTop - 1 ] == S3_RESPONSE_NODE_BUCKET );
+        ( m_stack[ m_stackTop - 1 ] == WS_RESPONSE_NODE_BUCKET );
 }
 
 void 
-S3ListBucketsRequest::onPrepare( CURL *curl )
+WsListBucketsRequest::onPrepare( CURL *curl )
 {
-    S3Request::onPrepare( curl );
+    WsRequest::onPrepare( curl );
     curl_easy_setopt_checked( curl, CURLOPT_HTTPGET, 1 );
 }
 
@@ -1785,11 +1814,11 @@ S3ListBucketsRequest::onPrepare( CURL *curl )
 //////////////////////////////////////////////////////////////////////////////
 // Response handling for 'listObjects' operation.
 
-class S3ListObjectsRequest : public S3Request
+class WsListObjectsRequest : public WsRequest
 {
 public:
-                    S3ListObjectsRequest( const char *prefix, 
-                        S3ObjectEnum *objectEnum, bool isWalrus );
+                    WsListObjectsRequest( const char *prefix, 
+                        WsObjectEnum *objectEnum, WsStorType storType );
 
     const std::string & nextMarker() const { return m_nextMarker.empty() ? m_current.key : m_nextMarker; }
 private:
@@ -1803,25 +1832,25 @@ private:
 
     bool            isObjectNode();
     
-    S3Object        m_current;
-    S3ObjectEnum   *m_objectEnum;
-    bool            m_isWalrus;
+    WsObject        m_current;
+    WsObjectEnum   *m_objectEnum;
+    WsStorType      m_storType;
     std::string     m_prefix;
     std::string     m_nextMarker;
 };
 
 
-S3ListObjectsRequest::S3ListObjectsRequest( const char *prefix, 
-    S3ObjectEnum *objectEnum, bool isWalrus )
-    : S3Request( prefix )
+WsListObjectsRequest::WsListObjectsRequest( const char *prefix, 
+    WsObjectEnum *objectEnum, WsStorType storType )
+    : WsRequest( prefix )
     , m_objectEnum( objectEnum )
-    , m_isWalrus( isWalrus )
+    , m_storType( storType )
 {
     dbgAssert( objectEnum );
 }
 
 bool
-S3ListObjectsRequest::onStartXmlElement() 
+WsListObjectsRequest::onStartXmlElement() 
 { 
     if( isObjectNode() )
     {
@@ -1832,7 +1861,7 @@ S3ListObjectsRequest::onStartXmlElement()
 }
 
 bool
-S3ListObjectsRequest::onEndXmlElement() 
+WsListObjectsRequest::onEndXmlElement() 
 { 
     if( isObjectNode() )
     {
@@ -1843,7 +1872,7 @@ S3ListObjectsRequest::onEndXmlElement()
 }
 
 bool
-S3ListObjectsRequest::onSetXmlValue( const char *value, int len ) 
+WsListObjectsRequest::onSetXmlValue( const char *value, int len ) 
 {
     if( m_stackTop < 2 )
     {
@@ -1852,55 +1881,58 @@ S3ListObjectsRequest::onSetXmlValue( const char *value, int len )
 
     switch( m_stack[ m_stackTop - 1 ] )
     {
-    case S3_RESPONSE_NODE_IS_TRUNCATED:
+    case WS_RESPONSE_NODE_IS_TRUNCATED:
         m_responseDetails.isTruncated = ( len == 4 && !strncmp( value, "true", 4 ) );
         break;
 
-    case S3_RESPONSE_NODE_KEY:
+    case WS_RESPONSE_NODE_KEY:
 
         // Append value here instead of assign because it can be passed in chunks.
 
         m_current.key.append( value, len );
         break;
 
-    case S3_RESPONSE_NODE_LAST_MODIFIED:
+    case WS_RESPONSE_NODE_LAST_MODIFIED:
         m_current.lastModified.assign( value, len );
         break;
 
-    case S3_RESPONSE_NODE_ETAG:
+    case WS_RESPONSE_NODE_ETAG:
 
         // Skip beginning and trailing quotes.
 
-        if( len != 1 || *value != '"' )
-        {
-            m_current.etag.append( value, len );
-        }
+        if( len && *value == '"' )
+            ++value, --len;
+
+        if( len && value[ len - 1 ] == '"' )
+            --len;
+
+        m_current.etag.append( value, len );
         break;
 
-    case S3_RESPONSE_NODE_SIZE:
+    case WS_RESPONSE_NODE_SIZE:
         {
             std::string tmp( value, len );
             m_current.size = atoll( tmp.c_str() );
             break;
         }
 
-    case S3_RESPONSE_NODE_PREFIX:
-        if( m_stack[ m_stackTop - 2 ] == S3_RESPONSE_NODE_COMMON_PREFIXES )
+    case WS_RESPONSE_NODE_PREFIX:
+        if( m_stack[ m_stackTop - 2 ] == WS_RESPONSE_NODE_COMMON_PREFIXES )
         {
-            if( m_isWalrus )
+            if( m_storType == WST_WALRUS )
             {
                 m_current.key.append( m_prefix );
             }
             m_current.key.append( value, len );
             m_current.isDir = true;
         }
-        else if( m_isWalrus )
+        else if( m_storType == WST_WALRUS )
         {
             m_prefix.assign( value, len );
         }
         break;
 
-    case S3_RESPONSE_NODE_NEXT_MARKER:
+    case WS_RESPONSE_NODE_NEXT_MARKER:
         m_nextMarker.assign( value, len );
         break;
     }
@@ -1909,37 +1941,37 @@ S3ListObjectsRequest::onSetXmlValue( const char *value, int len )
 }
 
 bool
-S3ListObjectsRequest::isObjectNode()
+WsListObjectsRequest::isObjectNode()
 {
-    if( !m_isWalrus )
+    if( m_storType != WST_WALRUS )
     {
         return m_stackTop == 2 && 
-            ( m_stack[ m_stackTop - 1 ] == S3_RESPONSE_NODE_CONTENTS || 
-            m_stack[ m_stackTop - 1 ] == S3_RESPONSE_NODE_COMMON_PREFIXES );
+            ( m_stack[ m_stackTop - 1 ] == WS_RESPONSE_NODE_CONTENTS || 
+            m_stack[ m_stackTop - 1 ] == WS_RESPONSE_NODE_COMMON_PREFIXES );
     }
     else
     {
-        return m_stackTop == 3 && m_stack[ m_stackTop - 1 ] == S3_RESPONSE_NODE_CONTENTS ||
+        return m_stackTop == 3 && m_stack[ m_stackTop - 1 ] == WS_RESPONSE_NODE_CONTENTS ||
             m_stackTop == 4 && 
-            m_stack[ m_stackTop - 1 ] == S3_RESPONSE_NODE_PREFIX && 
-            m_stack[ m_stackTop - 2 ] == S3_RESPONSE_NODE_COMMON_PREFIXES;
+            m_stack[ m_stackTop - 1 ] == WS_RESPONSE_NODE_PREFIX && 
+            m_stack[ m_stackTop - 2 ] == WS_RESPONSE_NODE_COMMON_PREFIXES;
     }
 }
 
 void
-S3ListObjectsRequest::onPrepare( CURL *curl )
+WsListObjectsRequest::onPrepare( CURL *curl )
 {
-    S3Request::onPrepare( curl );
+    WsRequest::onPrepare( curl );
     curl_easy_setopt_checked( m_curl, CURLOPT_HTTPGET, 1 );
 }
 
 //////////////////////////////////////////////////////////////////////////////
 // Response handling for 'initiateMultipartUpload' operation.
 
-class S3InitiateMultipartUploadRequest : public S3Request
+class WsInitiateMultipartUploadRequest : public WsRequest
 {
 public:
-                    S3InitiateMultipartUploadRequest( const char *name );
+                    WsInitiateMultipartUploadRequest( const char *name );
 
 private:
     virtual bool    onExpectXmlPayload() const { return true; }
@@ -1950,15 +1982,15 @@ private:
 };
 
 
-S3InitiateMultipartUploadRequest::S3InitiateMultipartUploadRequest( const char *name )
-    : S3Request( name )
+WsInitiateMultipartUploadRequest::WsInitiateMultipartUploadRequest( const char *name )
+    : WsRequest( name )
 {
 }
 
 bool
-S3InitiateMultipartUploadRequest::onSetXmlValue( const char *value, int len ) 
+WsInitiateMultipartUploadRequest::onSetXmlValue( const char *value, int len ) 
 {
-    if( m_stackTop == 2 && m_stack[ m_stackTop - 1 ] == S3_RESPONSE_NODE_UPLOAD_ID )
+    if( m_stackTop == 2 && m_stack[ m_stackTop - 1 ] == WS_RESPONSE_NODE_UPLOAD_ID )
     {
         m_responseDetails.uploadId.assign( value, len );
     }
@@ -1967,9 +1999,9 @@ S3InitiateMultipartUploadRequest::onSetXmlValue( const char *value, int len )
 }
 
 void
-S3InitiateMultipartUploadRequest::onPrepare( CURL *curl )
+WsInitiateMultipartUploadRequest::onPrepare( CURL *curl )
 {
-    S3Request::onPrepare( curl );
+    WsRequest::onPrepare( curl );
     curl_easy_setopt_checked( m_curl, CURLOPT_POST, 1 );
     curl_easy_setopt_checked( m_curl, CURLOPT_POSTFIELDSIZE, 0 );
 }
@@ -1977,10 +2009,10 @@ S3InitiateMultipartUploadRequest::onPrepare( CURL *curl )
 //////////////////////////////////////////////////////////////////////////////
 // Response handling for 'completeMultipartUpload' operation.
 
-class S3CompleteMultipartUploadRequest : public S3Request
+class WsCompleteMultipartUploadRequest : public WsRequest
 {
 public:
-                    S3CompleteMultipartUploadRequest( const char *name );
+                    WsCompleteMultipartUploadRequest( const char *name );
 
     void            setUpload( const void *data, size_t size );
 
@@ -1992,19 +2024,19 @@ private:
     virtual void    onPrepare( CURL *curl );
     virtual const char *onHttpVerb() { return "POST"; }
 
-    S3PutRequestBufferUploader m_builtinUploader;
+    WsPutRequestBufferUploader m_builtinUploader;
 };
 
-S3CompleteMultipartUploadRequest::S3CompleteMultipartUploadRequest( const char *name )
-    : S3Request( name )
+WsCompleteMultipartUploadRequest::WsCompleteMultipartUploadRequest( const char *name )
+    : WsRequest( name )
     , m_builtinUploader( NULL, 0 )
 {
 }
 
 bool
-S3CompleteMultipartUploadRequest::onSetXmlValue( const char *value, int len )
+WsCompleteMultipartUploadRequest::onSetXmlValue( const char *value, int len )
 {
-    if( m_stackTop == 2 && m_stack[ m_stackTop - 1 ] == S3_RESPONSE_NODE_ETAG )
+    if( m_stackTop == 2 && m_stack[ m_stackTop - 1 ] == WS_RESPONSE_NODE_ETAG )
     {
         // Skip beginning and trailing quotes.
 
@@ -2018,13 +2050,13 @@ S3CompleteMultipartUploadRequest::onSetXmlValue( const char *value, int len )
 }
 
 size_t   
-S3CompleteMultipartUploadRequest::onUploadBinary( void *chunkBuf, size_t chunkSize )
+WsCompleteMultipartUploadRequest::onUploadBinary( void *chunkBuf, size_t chunkSize )
 {
      return m_builtinUploader.onUpload( chunkBuf, chunkSize );
 }
 
 void  
-S3CompleteMultipartUploadRequest::setUpload( const void *data, size_t size )
+WsCompleteMultipartUploadRequest::setUpload( const void *data, size_t size )
 {
     dbgAssert( m_curl );
     m_builtinUploader.setUpload( data, size );
@@ -2032,22 +2064,22 @@ S3CompleteMultipartUploadRequest::setUpload( const void *data, size_t size )
 }
 
 void    
-S3CompleteMultipartUploadRequest::onPrepare( CURL *curl )
+WsCompleteMultipartUploadRequest::onPrepare( CURL *curl )
 {
-    S3Request::onPrepare( curl );
+    WsRequest::onPrepare( curl );
     curl_easy_setopt_checked( m_curl, CURLOPT_POST, 1 );
 }
 
 //////////////////////////////////////////////////////////////////////////////
 // Response handling for 'listMultipartUpload' operation.
 
-class S3ListMultipartUploadsRequest : public S3Request
+class WsListMultipartUploadsRequest : public WsRequest
 {
 public:
-                    S3ListMultipartUploadsRequest( const char *name,
-                            S3MultipartUploadEnum *uploadEnum );
+                    WsListMultipartUploadsRequest( const char *name,
+                            WsMultipartUploadEnum *uploadEnum );
         
-    const S3MultipartUpload &lastUpload() const { return m_current; }
+    const WsMultipartUpload &lastUpload() const { return m_current; }
 
 protected:
     virtual bool    onExpectXmlPayload() const { return true; }
@@ -2061,20 +2093,20 @@ protected:
 private:
     bool            isUploadNode();
 
-    S3MultipartUpload       m_current;
-    S3MultipartUploadEnum * m_uploadEnum;
+    WsMultipartUpload       m_current;
+    WsMultipartUploadEnum * m_uploadEnum;
 };
 
-S3ListMultipartUploadsRequest::S3ListMultipartUploadsRequest( const char *name, 
-    S3MultipartUploadEnum *uploadEnum )
-    : S3Request( name )
+WsListMultipartUploadsRequest::WsListMultipartUploadsRequest( const char *name, 
+    WsMultipartUploadEnum *uploadEnum )
+    : WsRequest( name )
     , m_uploadEnum( uploadEnum )
 {
     dbgAssert( uploadEnum );
 }
 
 bool
-S3ListMultipartUploadsRequest::onStartXmlElement( ) 
+WsListMultipartUploadsRequest::onStartXmlElement( ) 
 { 
     if( isUploadNode() )
     {
@@ -2085,7 +2117,7 @@ S3ListMultipartUploadsRequest::onStartXmlElement( )
 }
 
 bool
-S3ListMultipartUploadsRequest::onEndXmlElement( ) 
+WsListMultipartUploadsRequest::onEndXmlElement( ) 
 { 
     if( isUploadNode() )
     {
@@ -2096,7 +2128,7 @@ S3ListMultipartUploadsRequest::onEndXmlElement( )
 }
 
 bool
-S3ListMultipartUploadsRequest::onSetXmlValue( const char *value, int len ) 
+WsListMultipartUploadsRequest::onSetXmlValue( const char *value, int len ) 
 {
     if( m_stackTop < 2 )
     {
@@ -2105,23 +2137,23 @@ S3ListMultipartUploadsRequest::onSetXmlValue( const char *value, int len )
 
     switch( m_stack[ m_stackTop - 1 ] )
     {
-    case S3_RESPONSE_NODE_IS_TRUNCATED:
+    case WS_RESPONSE_NODE_IS_TRUNCATED:
         m_responseDetails.isTruncated = ( len == 4 && !strncmp( value, "true", 4 ) );
         break;
 
-    case S3_RESPONSE_NODE_KEY:
+    case WS_RESPONSE_NODE_KEY:
 
         // Append value here instead of assign because it can be passed in chunks.
 
         m_current.key.append( value, len );
         break;
 
-    case S3_RESPONSE_NODE_UPLOAD_ID:
+    case WS_RESPONSE_NODE_UPLOAD_ID:
         m_current.uploadId.assign( value, len );
         break;
 
-    case S3_RESPONSE_NODE_PREFIX:
-        if( m_stack[ m_stackTop - 2 ] == S3_RESPONSE_NODE_COMMON_PREFIXES )
+    case WS_RESPONSE_NODE_PREFIX:
+        if( m_stack[ m_stackTop - 2 ] == WS_RESPONSE_NODE_COMMON_PREFIXES )
         {
             m_current.key.append( value, len );
             m_current.isDir = true;
@@ -2133,17 +2165,17 @@ S3ListMultipartUploadsRequest::onSetXmlValue( const char *value, int len )
 }
 
 inline bool
-S3ListMultipartUploadsRequest::isUploadNode()
+WsListMultipartUploadsRequest::isUploadNode()
 {
     return m_stackTop == 2 && 
-        ( m_stack[ m_stackTop - 1 ] == S3_RESPONSE_NODE_UPLOAD || 
-        m_stack[ m_stackTop - 1 ] == S3_RESPONSE_NODE_COMMON_PREFIXES );
+        ( m_stack[ m_stackTop - 1 ] == WS_RESPONSE_NODE_UPLOAD || 
+        m_stack[ m_stackTop - 1 ] == WS_RESPONSE_NODE_COMMON_PREFIXES );
 }
 
 void
-S3ListMultipartUploadsRequest::onPrepare( CURL *curl )
+WsListMultipartUploadsRequest::onPrepare( CURL *curl )
 {
-    S3Request::onPrepare( curl );
+    WsRequest::onPrepare( curl );
     curl_easy_setopt_checked( curl, CURLOPT_HTTPGET, 1 );
 }
 
@@ -2151,38 +2183,38 @@ S3ListMultipartUploadsRequest::onPrepare( CURL *curl )
 // General error handing.
 
 static void 
-handleErrors( const S3ResponseDetails &details )
+handleErrors( const WsResponseDetails &details )
 {
     switch( details.status ) 
     {
-    case S3_RESPONSE_STATUS_SUCCESS:
+    case WS_RESPONSE_STATUS_SUCCESS:
         break;
 
-    case S3_RESPONSE_STATUS_UNEXPECTED:
+    case WS_RESPONSE_STATUS_UNEXPECTED:
         {
             // HTTP header is missing in the response, this should never happen.
 
-            throw S3Exception( errUnexpected );
+            throw WsException( errUnexpected );
         }
 
-    case S3_RESPONSE_STATUS_HTTP_RESOURSE_NOT_FOUND:
+    case WS_RESPONSE_STATUS_HTTP_RESOURSE_NOT_FOUND:
         {
-            throw S3Exception( errHTTPResourceNotFound, details.url.c_str() );
+            throw WsException( errHTTPResourceNotFound, details.url.c_str() );
         }
 
-    case S3_RESPONSE_STATUS_HTTP_FAILURE:
-    case S3_RESPONSE_STATUS_HTTP_OR_AWS_FAILURE: // could not read more details from the payload, treat as http error.
+    case WS_RESPONSE_STATUS_HTTP_FAILURE:
+    case WS_RESPONSE_STATUS_HTTP_OR_WS_FAILURE: // could not read more details from the payload, treat as http error.
         {
-            throw S3Exception( errHTTP, details.httpStatus.c_str() );
+            throw WsException( errHTTP, details.httpStatus.c_str() );
         }
 
-    case S3_RESPONSE_STATUS_FAILURE_WITH_DETAILS:
+    case WS_RESPONSE_STATUS_FAILURE_WITH_DETAILS:
         {
             //$ REVIEW: add details.amazonId and details.hostId
             // to the exception class (without forcing them into
             // the message).
 
-            throw S3Exception( errAWS, 
+            throw WsException( errWsDetail, 
                 details.errorMessage.c_str(), 
                 details.errorCode.c_str(), 
                 details.requestId.c_str() );
@@ -2208,23 +2240,23 @@ throwSummary( const char *op, const char *key )
     }
     catch( const std::exception &e )
     {
-        throw S3Exception( errS3Summary, op, key, e.what() );
+        throw WsException( errOpSummary, op, key, e.what() );
     }
     catch( ... )
     {
-        throw S3Exception( errS3Summary, op, key, errUnexpected );
+        throw WsException( errOpSummary, op, key, errUnexpected );
     }
 }
 
 //////////////////////////////////////////////////////////////////////////////
-// S3Connection.
+// WsConnection.
 
-S3Connection::S3Connection( const S3Config &config )
+WsConnection::WsConnection( const WsConfig &config )
     : m_accKey( config.accKey )
     , m_secKey( config.secKey )
     , m_baseUrl()
     , m_proxy( config.proxy ? config.proxy : "" )
-    , m_isWalrus( config.isWalrus )
+    , m_storType( config.storType )
     , m_isHttps( config.isHttps )
     , m_sslCertFile( config.sslCertFile ? config.sslCertFile : "" )
     , m_traceCallback( NULL )
@@ -2240,11 +2272,11 @@ S3Connection::S3Connection( const S3Config &config )
 
     m_baseUrl = config.isHttps ? "https://" : "http://";
 
-    m_baseUrl.append( config.host && *config.host ? config.host : s_defaultHost );
+    m_baseUrl.append( config.host && *config.host ? config.host : ( config.storType == WST_GCS ? s_defaultGcsHost : s_defaultS3Host ) );
 
     const char* port = config.port;
 
-    if( config.isWalrus && ( !port || !*port ) )
+    if( config.storType == WST_WALRUS && ( !port || !*port ) )
     {
         port = s_defaultWalrusPort;
     }
@@ -2255,7 +2287,7 @@ S3Connection::S3Connection( const S3Config &config )
         m_baseUrl.append( port );
     }
 
-    if( config.isWalrus )
+    if( config.storType == WST_WALRUS )
     {
         m_baseUrl.append( STRING_WITH_LEN( "/services/Walrus" ) );
     }
@@ -2268,12 +2300,12 @@ S3Connection::S3Connection( const S3Config &config )
 
     StringWithLen prefix = { STRING_WITH_LEN( "s3-" ) };
 
-    if ( !config.isWalrus && config.host && !strncmp( config.host, prefix.str, prefix.len ) )
+    if ( config.storType == WST_S3 && config.host && !strncmp( config.host, prefix.str, prefix.len ) )
     {
-        dbgAssert( !strncmp( s_defaultHost, STRING_WITH_LEN( "s3." ) ) );
+        dbgAssert( !strncmp( s_defaultS3Host, STRING_WITH_LEN( "s3." ) ) );
 
         const char *p = config.host + prefix.len;
-        const char *p2 = strstr( p, s_defaultHost + 2 );
+        const char *p2 = strstr( p, s_defaultS3Host + 2 );
 
         if( p2 )
         {
@@ -2282,13 +2314,13 @@ S3Connection::S3Connection( const S3Config &config )
     }
 }
 
-S3Connection::~S3Connection()
+WsConnection::~WsConnection()
 {
     cancelAsync();  // nofail
 }
 
 void
-S3Connection::cancelAsync()  // nofail
+WsConnection::cancelAsync()  // nofail
 {
     std::auto_ptr< Request > request( m_asyncRequest );
     m_asyncRequest = NULL;
@@ -2297,26 +2329,26 @@ S3Connection::cancelAsync()  // nofail
 }
 
 bool
-S3Connection::isAsyncPending()
+WsConnection::isAsyncPending()
 {
     return !!m_asyncRequest;
 }
 
 bool
-S3Connection::isAsyncCompleted() 
+WsConnection::isAsyncCompleted() 
 {
     return m_asyncRequest && m_curl.isOpCompleted();
 }
 
 int       
-S3Connection::waitAny( S3Connection **cons, size_t count, size_t startFrom, long timeout )
+WsConnection::waitAny( WsConnection **cons, size_t count, size_t startFrom, long timeout )
 {
     CASSERT( c_maxWaitAny == EventSync::c_maxEventCount );
     dbgAssert( implies( count, cons ) );
 
     if( count > EventSync::c_maxEventCount )
     {
-        throw S3Exception( errTooManyConnetions );
+        throw WsException( errTooManyConnetions );
     }
 
     EventSync *events[ EventSync::c_maxEventCount ] = {};
@@ -2327,7 +2359,7 @@ S3Connection::waitAny( S3Connection **cons, size_t count, size_t startFrom, long
         // to ensure fairness.
 
         size_t index = ( i + startFrom ) % count;
-        S3Connection &con = *( cons[ index ] );
+        WsConnection &con = *( cons[ index ] );
 
         dbgAssert( con.isAsyncPending() );
 
@@ -2380,7 +2412,7 @@ writeNoop( const void *chunkData, size_t count, size_t elementSize, void *ctx ) 
 }
 
 void
-S3Connection::prepare( S3Request *request, const char *bucketName, const char *key,
+WsConnection::prepare( WsRequest *request, const char *bucketName, const char *key,
         const char *contentType, bool makePublic, bool useSrvEncrypt )
 {
     dbgAssert( !m_asyncRequest ); // some async operation is in progress, need to complete/cancel it first 
@@ -2472,7 +2504,7 @@ S3Connection::prepare( S3Request *request, const char *bucketName, const char *k
 
     setRequestHeaders( m_accKey, m_secKey,
         0 /* contentMd5 */, contentType, makePublic, useSrvEncrypt,
-        request->httpVerb(), bucketName, key, m_isWalrus,
+        request->httpVerb(), bucketName, key, m_storType,
         &request->headers );
 
     curl_easy_setopt_checked( m_curl, CURLOPT_HTTPHEADER, static_cast< curl_slist * >( request->headers ) );
@@ -2483,7 +2515,7 @@ S3Connection::prepare( S3Request *request, const char *bucketName, const char *k
 }
 
 void
-S3Connection::init( S3Request *request, const char *bucketName, const char *key, 
+WsConnection::init( WsRequest *request, const char *bucketName, const char *key, 
                       const char *keySuffix, const char *contentType, 
                       bool makePublic,  bool useSrvEncrypt )
 {
@@ -2499,7 +2531,7 @@ S3Connection::init( S3Request *request, const char *bucketName, const char *key,
 }
 
 void 
-S3Connection::createBucket( const char *bucketName,  bool makePublic )
+WsConnection::createBucket( const char *bucketName,  bool makePublic )
 {
     dbgAssert( bucketName );
     
@@ -2509,15 +2541,15 @@ S3Connection::createBucket( const char *bucketName,  bool makePublic )
     {
         // Initialize Put request.
 
-        S3PutRequest request( bucketName );
+        WsPutRequest request( bucketName );
         init( &request, bucketName, NULL /* key */, NULL /* keySuffix */,
-            NULL /* s_contentTypeXml */, makePublic );
+            NULL /* contentType */, makePublic );
 
         // Construct payload with region name.
 
         std::string payload;
 
-        if( !m_isWalrus && !m_region.empty() )
+        if( m_storType != WST_WALRUS && !m_region.empty() )
         {
             payload.reserve( 256 );
             payload.append("<CreateBucketConfiguration><LocationConstraint>");
@@ -2529,7 +2561,7 @@ S3Connection::createBucket( const char *bucketName,  bool makePublic )
 
         // Execute and get the response.
 
-        S3ResponseDetails &responseDetails = request.execute();  
+        WsResponseDetails &responseDetails = request.execute();  
         handleErrors( responseDetails );
     }
     catch( ... )
@@ -2541,7 +2573,7 @@ S3Connection::createBucket( const char *bucketName,  bool makePublic )
 }
 
 void
-S3Connection::delBucket( const char *bucketName )
+WsConnection::delBucket( const char *bucketName )
 {
     dbgAssert( bucketName );
 
@@ -2560,7 +2592,7 @@ S3Connection::delBucket( const char *bucketName )
 }
 
 void             
-S3Connection::listAllBuckets( std::vector< S3Bucket > *buckets /* out */ )
+WsConnection::listAllBuckets( std::vector< WsBucket > *buckets /* out */ )
 {
     dbgAssert( buckets );
 
@@ -2568,10 +2600,10 @@ S3Connection::listAllBuckets( std::vector< S3Bucket > *buckets /* out */ )
 
     try
     {
-        S3ListBucketsRequest request( buckets );
+        WsListBucketsRequest request( buckets );
         init( &request, "" /* bucketName */, NULL /* key */, NULL /* keySuffix */ );
 
-        S3ResponseDetails &responseDetails = request.execute();  
+        WsResponseDetails &responseDetails = request.execute();  
         handleErrors( responseDetails );
     }
     catch( ... )
@@ -2583,7 +2615,7 @@ S3Connection::listAllBuckets( std::vector< S3Bucket > *buckets /* out */ )
 }
 
 static void
-completePut( S3ResponseDetails &responseDetails, S3PutResponse *response )
+completePut( WsResponseDetails &responseDetails, WsPutResponse *response )
 {
     handleErrors( responseDetails );
 
@@ -2594,10 +2626,10 @@ completePut( S3ResponseDetails &responseDetails, S3PutResponse *response )
 }
 
 void
-S3Connection::put( S3Request *request, const char *bucketName, const char *key, 
+WsConnection::put( WsRequest *request, const char *bucketName, const char *key, 
                   const char *uploadId, int partNumber,
                   bool makePublic, bool useSrvEncrypt, const char *contentType,
-                  S3PutResponse *response )
+                  WsPutResponse *response )
 {
     dbgAssert( request );
     dbgAssert( bucketName );
@@ -2620,7 +2652,7 @@ S3Connection::put( S3Request *request, const char *bucketName, const char *key,
 
     // Execute the request.
 
-    S3ResponseDetails &responseDetails = request->execute();  
+    WsResponseDetails &responseDetails = request->execute();  
 
     // Complete the request.
 
@@ -2628,8 +2660,8 @@ S3Connection::put( S3Request *request, const char *bucketName, const char *key,
 }
 
 void
-S3Connection::put( const char *bucketName, const char *key, const void *data, 
-    size_t size, bool makePublic, bool useSrvEncrypt, const char *contentType, S3PutResponse *response )
+WsConnection::put( const char *bucketName, const char *key, const void *data, 
+    size_t size, bool makePublic, bool useSrvEncrypt, const char *contentType, WsPutResponse *response )
 {
     dbgAssert( bucketName );
     dbgAssert( implies( size, data ) );
@@ -2639,7 +2671,7 @@ S3Connection::put( const char *bucketName, const char *key, const void *data,
 
     try
     {
-        S3PutRequest request( key, data, size );
+        WsPutRequest request( key, data, size );
         put( &request, bucketName, key, NULL /* uploadId */, 0 /* partNumber */,
             makePublic, useSrvEncrypt, contentType, response );
     }
@@ -2653,8 +2685,8 @@ S3Connection::put( const char *bucketName, const char *key, const void *data,
 
 
 void 
-S3Connection::put( const char *bucketName, const char *key, S3PutRequestUploader *uploader, 
-    size_t totalSize, bool makePublic, bool useSrvEncrypt, const char *contentType, S3PutResponse *response )
+WsConnection::put( const char *bucketName, const char *key, WsPutRequestUploader *uploader, 
+    size_t totalSize, bool makePublic, bool useSrvEncrypt, const char *contentType, WsPutResponse *response )
 {
     dbgAssert( bucketName );
     dbgAssert( uploader );
@@ -2664,7 +2696,7 @@ S3Connection::put( const char *bucketName, const char *key, S3PutRequestUploader
 
     try
     {
-        S3PutRequest request( key, uploader, totalSize );
+        WsPutRequest request( key, uploader, totalSize );
         put( &request, bucketName, key, NULL /* uploadId */, 0 /* partNumber */,
             makePublic, useSrvEncrypt, contentType, response );
     }
@@ -2678,7 +2710,7 @@ S3Connection::put( const char *bucketName, const char *key, S3PutRequestUploader
 
 
 void
-S3Connection::pendPut( AsyncMan *asyncMan, const char *bucketName, 
+WsConnection::pendPut( AsyncMan *asyncMan, const char *bucketName, 
                       const char *key, const void *data, size_t size,
                       bool makePublic, bool useSrvEncrypt )
 {
@@ -2694,7 +2726,7 @@ S3Connection::pendPut( AsyncMan *asyncMan, const char *bucketName,
     {
         // Initialize Put request.
 
-        std::auto_ptr< S3PutRequest > request( new S3PutRequest( key, data, size ) );
+        std::auto_ptr< WsPutRequest > request( new WsPutRequest( key, data, size ) );
         init( request.get(), bucketName, key, NULL /* keySuffix */, s_contentTypeBinary, makePublic, useSrvEncrypt );
 
         // Start async.
@@ -2711,16 +2743,16 @@ S3Connection::pendPut( AsyncMan *asyncMan, const char *bucketName,
 }
 
 void
-S3Connection::completePut( S3PutResponse *response )
+WsConnection::completePut( WsPutResponse *response )
 {
     dbgAssert( m_asyncRequest );
-    dbgAssert( dynamic_cast< S3Request *>( m_asyncRequest ) );
+    dbgAssert( dynamic_cast< WsRequest *>( m_asyncRequest ) );
 
     LOG_TRACE( "enter completePut: conn=0x%llx", ( UInt64 )this );
 
     // Make sure that async operation is completed no matter what happens below.
 
-    std::auto_ptr< S3Request > request( static_cast< S3Request * >( m_asyncRequest ) );
+    std::auto_ptr< WsRequest > request( static_cast< WsRequest * >( m_asyncRequest ) );
     m_asyncRequest = NULL;
 
     try
@@ -2731,7 +2763,7 @@ S3Connection::completePut( S3PutResponse *response )
 
         // Complete the request.
 
-        S3ResponseDetails &responseDetails = request->complete( static_cast< CURLcode >( m_curl.opResult() ) );
+        WsResponseDetails &responseDetails = request->complete( static_cast< CURLcode >( m_curl.opResult() ) );
         ::webstor::completePut( responseDetails, response );
     }
     catch( ... )
@@ -2743,16 +2775,16 @@ S3Connection::completePut( S3PutResponse *response )
 }
 
 static void
-completeGet( S3ResponseDetails &responseDetails, S3GetResponse *response )
+completeGet( WsResponseDetails &responseDetails, WsGetResponse *response )
 {
     // A special case for GetResponse: treat NoSuchKey as success
     // but with loadedContentLength = -1.
 
-    if( responseDetails.status == S3_RESPONSE_STATUS_FAILURE_WITH_DETAILS &&
+    if( responseDetails.status == WS_RESPONSE_STATUS_FAILURE_WITH_DETAILS &&
         ( !strcmp( responseDetails.errorCode.c_str(), "NoSuchKey" ) ||      // Amazon
         !strcmp( responseDetails.errorCode.c_str(), "NoSuchEntity" ) ) )    // Walrus
     {
-        responseDetails.status = S3_RESPONSE_STATUS_SUCCESS;
+        responseDetails.status = WS_RESPONSE_STATUS_SUCCESS;
         responseDetails.loadedContentLength = -1;
     }
 
@@ -2767,8 +2799,8 @@ completeGet( S3ResponseDetails &responseDetails, S3GetResponse *response )
 }
 
 void
-S3Connection::get( const char *bucketName, const char *key, S3GetResponseLoader *loader /* in */, 
-                    S3GetResponse *response /* out */ )
+WsConnection::get( const char *bucketName, const char *key, WsGetResponseLoader *loader /* in */, 
+                    WsGetResponse *response /* out */ )
 {
     dbgAssert( bucketName );
     dbgAssert( key );
@@ -2780,12 +2812,12 @@ S3Connection::get( const char *bucketName, const char *key, S3GetResponseLoader 
     {
         // Initialize Get request.
 
-        S3GetRequest request( key, loader );
+        WsGetRequest request( key, loader );
         init( &request, bucketName, key );
 
         // Execute the request.
 
-        S3ResponseDetails &responseDetails = request.execute();  
+        WsResponseDetails &responseDetails = request.execute();  
 
         // Complete the request.
 
@@ -2800,19 +2832,19 @@ S3Connection::get( const char *bucketName, const char *key, S3GetResponseLoader 
 }
 
 void
-S3Connection::get( const char *bucketName, const char *key, void *buffer, size_t size, 
-                    S3GetResponse *response /* out */ )
+WsConnection::get( const char *bucketName, const char *key, void *buffer, size_t size, 
+                    WsGetResponse *response /* out */ )
 {
     dbgAssert( bucketName );
     dbgAssert( key );
     dbgAssert( implies( size, buffer ) );
 
-    S3GetResponseBufferLoader loader( buffer, size );
+    WsGetResponseBufferLoader loader( buffer, size );
     get( bucketName, key, &loader, response );
 }
 
 void
-S3Connection::pendGet( AsyncMan *asyncMan, const char *bucketName, const char *key, void *buffer, size_t size )
+WsConnection::pendGet( AsyncMan *asyncMan, const char *bucketName, const char *key, void *buffer, size_t size )
 {
     dbgAssert( asyncMan != NULL );
     dbgAssert( bucketName );
@@ -2826,7 +2858,7 @@ S3Connection::pendGet( AsyncMan *asyncMan, const char *bucketName, const char *k
     {
         // Initialize Get request.
 
-        std::auto_ptr< S3GetRequest > request( new S3GetRequest( key, buffer, size ) );
+        std::auto_ptr< WsGetRequest > request( new WsGetRequest( key, buffer, size ) );
         init( request.get(), bucketName, key );
 
         // Start async.
@@ -2843,16 +2875,16 @@ S3Connection::pendGet( AsyncMan *asyncMan, const char *bucketName, const char *k
 }
 
 void
-S3Connection::completeGet( S3GetResponse *response )
+WsConnection::completeGet( WsGetResponse *response )
 {
     dbgAssert( m_asyncRequest );
-    dbgAssert( dynamic_cast< S3GetRequest *>( m_asyncRequest ) );
+    dbgAssert( dynamic_cast< WsGetRequest *>( m_asyncRequest ) );
 
     LOG_TRACE( "enter completeGet: conn=0x%llx", ( UInt64 )this );
 
     // Make sure that async operation is completed no matter what happens below.
 
-    std::auto_ptr< S3Request > request( m_asyncRequest );
+    std::auto_ptr< WsRequest > request( m_asyncRequest );
     m_asyncRequest = NULL;
     
     try
@@ -2863,7 +2895,7 @@ S3Connection::completeGet( S3GetResponse *response )
 
         // Complete the request.
 
-        S3ResponseDetails &responseDetails = request->complete( static_cast< CURLcode >( m_curl.opResult() ) );
+        WsResponseDetails &responseDetails = request->complete( static_cast< CURLcode >( m_curl.opResult() ) );
         ::webstor::completeGet( responseDetails, response );
     }
     catch( ... )
@@ -2875,10 +2907,10 @@ S3Connection::completeGet( S3GetResponse *response )
 }
 
 void
-S3Connection::listObjects( const char *bucketName, const char *prefix,
+WsConnection::listObjects( const char *bucketName, const char *prefix,
                         const char *marker, const char *delimiter, unsigned int maxKeys,
-                        S3ObjectEnum *objectEnum,
-                        S3ListObjectsResponse *response /* out */ )
+                        WsObjectEnum *objectEnum,
+                        WsListObjectsResponse *response /* out */ )
 {
     dbgAssert( bucketName );
     dbgAssert( objectEnum );
@@ -2887,7 +2919,7 @@ S3Connection::listObjects( const char *bucketName, const char *prefix,
 
     // Workaround for Walrus.
 
-    if( m_isWalrus && ( !marker || !*marker ) )
+    if( m_storType == WST_WALRUS && ( !marker || !*marker ) )
     {
         marker = " ";
     }
@@ -2908,12 +2940,12 @@ S3Connection::listObjects( const char *bucketName, const char *prefix,
         appendQueryPart( &url, "max-keys", maxKeys != 0 ? uitoa( maxKeys, maxKeysBuf ) : 0, &firstQueryPart );
         appendQueryPart( &url, "prefix", prefix, &firstQueryPart );
 
-        S3ListObjectsRequest request( prefix, objectEnum, m_isWalrus );
+        WsListObjectsRequest request( prefix, objectEnum, m_storType );
         prepare( &request, bucketName, "" /* key */ );
 
         request.setUrl( url.c_str() ); 
 
-        S3ResponseDetails &responseDetails = request.execute();  
+        WsResponseDetails &responseDetails = request.execute();  
         handleErrors( responseDetails );
 
         if( response )
@@ -2931,42 +2963,42 @@ S3Connection::listObjects( const char *bucketName, const char *prefix,
 }
 
 void
-S3Connection::listObjects( const char *bucketName, const char *prefix,
+WsConnection::listObjects( const char *bucketName, const char *prefix,
     const char *marker, const char *delimiter, unsigned int maxKeys,
-    std::vector< S3Object > *objects /* out */,
-    S3ListObjectsResponse *response /* out */ )
+    std::vector< WsObject > *objects /* out */,
+    WsListObjectsResponse *response /* out */ )
 {
     dbgAssert( bucketName );
     dbgAssert( objects );
 
-    struct S3ObjectArray : S3ObjectEnum
+    struct WsObjectArray : WsObjectEnum
     {
-        S3ObjectArray( std::vector< S3Object > *_objects )
+        WsObjectArray( std::vector< WsObject > *_objects )
             : objects( _objects )
         {
             dbgAssert( _objects );
         }
 
-        virtual bool    onObject( const S3Object &object ) 
+        virtual bool    onObject( const WsObject &object ) 
         {
             objects->push_back( object );
             return true;
         }
 
-        std::vector< S3Object > *objects;
+        std::vector< WsObject > *objects;
     };
 
-    S3ObjectArray objectEnum( objects );
+    WsObjectArray objectEnum( objects );
     listObjects( bucketName, prefix, marker, delimiter, maxKeys, &objectEnum, response );
 }
 
 void
-S3Connection::listAllObjects( const char *bucketName, const char *prefix, 
-    const char *delimiter, S3ObjectEnum *objectEnum, unsigned int maxKeysInBatch )
+WsConnection::listAllObjects( const char *bucketName, const char *prefix, 
+    const char *delimiter, WsObjectEnum *objectEnum, unsigned int maxKeysInBatch )
 {
     LOG_TRACE( "enter listAllObjects: conn=0x%llx", ( UInt64 )this );
 
-    S3ListObjectsResponse response;
+    WsListObjectsResponse response;
 
     do
     {
@@ -2979,12 +3011,12 @@ S3Connection::listAllObjects( const char *bucketName, const char *prefix,
 }
 
 void
-S3Connection::listAllObjects( const char *bucketName, const char *prefix, 
-    const char *delimiter, std::vector< S3Object> *objects, unsigned int maxKeysInBatch )
+WsConnection::listAllObjects( const char *bucketName, const char *prefix, 
+    const char *delimiter, std::vector< WsObject> *objects, unsigned int maxKeysInBatch )
 {
     LOG_TRACE( "enter listAllObjects: conn=0x%llx", ( UInt64 )this );
 
-    S3ListObjectsResponse response;
+    WsListObjectsResponse response;
 
     do
     {
@@ -2997,33 +3029,34 @@ S3Connection::listAllObjects( const char *bucketName, const char *prefix,
 }
 
 static void
-completeDel( S3ResponseDetails &responseDetails, S3DelResponse *response )
+completeDel( WsResponseDetails &responseDetails, WsDelResponse *response )
 {
     // A special case for Walrus: handle NoSuchKey as success to be consistent with Amazon.
 
-    if( responseDetails.status == S3_RESPONSE_STATUS_FAILURE_WITH_DETAILS &&
-        !strcmp( responseDetails.errorCode.c_str(), "NoSuchEntity" ) )    
+    if( responseDetails.status == WS_RESPONSE_STATUS_FAILURE_WITH_DETAILS &&
+        ( !strcmp( responseDetails.errorCode.c_str(), "NoSuchKey" ) ||      // Amazon
+        !strcmp( responseDetails.errorCode.c_str(), "NoSuchEntity" ) ) )    // Walrus
     {
-        responseDetails.status = S3_RESPONSE_STATUS_SUCCESS;
+        responseDetails.status = WS_RESPONSE_STATUS_SUCCESS;
     }
 
     handleErrors( responseDetails );
 }
 
 void
-S3Connection::del( const char *bucketName, const char *key, const char *keySuffix, 
-                  S3DelResponse *response )
+WsConnection::del( const char *bucketName, const char *key, const char *keySuffix, 
+                  WsDelResponse *response )
 {
     dbgAssert( key );
 
     // Initialize Del request.
 
-    S3DelRequest request( key );
+    WsDelRequest request( key );
     init( &request, bucketName, key, keySuffix );
    
     // Execute the request.
 
-    S3ResponseDetails &responseDetails = request.execute();  
+    WsResponseDetails &responseDetails = request.execute();  
 
     // Complete the request.
 
@@ -3031,7 +3064,7 @@ S3Connection::del( const char *bucketName, const char *key, const char *keySuffi
 }
 
 void
-S3Connection::del( const char *bucketName, const char *key, S3DelResponse *response )
+WsConnection::del( const char *bucketName, const char *key, WsDelResponse *response )
 {
     dbgAssert( bucketName );
     dbgAssert( key );
@@ -3051,7 +3084,7 @@ S3Connection::del( const char *bucketName, const char *key, S3DelResponse *respo
 }
 
 void
-S3Connection::pendDel( AsyncMan *asyncMan, const char *bucketName, const char *key )
+WsConnection::pendDel( AsyncMan *asyncMan, const char *bucketName, const char *key )
 {
     dbgAssert( asyncMan != NULL );
     dbgAssert( bucketName );
@@ -3064,7 +3097,7 @@ S3Connection::pendDel( AsyncMan *asyncMan, const char *bucketName, const char *k
     {
         // Initialize Del request.
 
-        std::auto_ptr< S3DelRequest > request( new S3DelRequest( key ) );
+        std::auto_ptr< WsDelRequest > request( new WsDelRequest( key ) );
         init( request.get(), bucketName, key );
 
         // Start async.
@@ -3081,16 +3114,16 @@ S3Connection::pendDel( AsyncMan *asyncMan, const char *bucketName, const char *k
 }
 
 void
-S3Connection::completeDel( S3DelResponse *response )
+WsConnection::completeDel( WsDelResponse *response )
 {
     dbgAssert( m_asyncRequest );
-    dbgAssert( dynamic_cast< S3Request * >( m_asyncRequest ) );
+    dbgAssert( dynamic_cast< WsRequest * >( m_asyncRequest ) );
 
     LOG_TRACE( "enter completeDel: conn=0x%llx", ( UInt64 )this );
 
     // Make sure that async operation is completed no matter what happens below.
 
-    std::auto_ptr< S3Request > request( static_cast< S3Request * >( m_asyncRequest ) );
+    std::auto_ptr< WsRequest > request( static_cast< WsRequest * >( m_asyncRequest ) );
     m_asyncRequest = NULL;
 
     try
@@ -3101,7 +3134,7 @@ S3Connection::completeDel( S3DelResponse *response )
 
         // Complete the request.
 
-        S3ResponseDetails &responseDetails = request->complete( static_cast< CURLcode >( m_curl.opResult() ) );
+        WsResponseDetails &responseDetails = request->complete( static_cast< CURLcode >( m_curl.opResult() ) );
         ::webstor::completeDel( responseDetails, response );
     }
     catch( ... )
@@ -3113,12 +3146,12 @@ S3Connection::completeDel( S3DelResponse *response )
 }
 
 void
-S3Connection::delAll( const char *bucketName, const char *prefix, unsigned int maxKeysInBatch )
+WsConnection::delAll( const char *bucketName, const char *prefix, unsigned int maxKeysInBatch )
 {
     //$ REVIEW: use Amazon batch delete here.
 
-    S3ListObjectsResponse response;
-    std::vector< S3Object > objects;
+    WsListObjectsResponse response;
+    std::vector< WsObject > objects;
     objects.reserve( 64 );
 
     LOG_TRACE( "enter delAll: conn=0x%llx", ( UInt64 )this );
@@ -3140,23 +3173,23 @@ S3Connection::delAll( const char *bucketName, const char *prefix, unsigned int m
 }
 
 void 
-S3Connection::initiateMultipartUpload( const char *bucketName, const char *key, 
+WsConnection::initiateMultipartUpload( const char *bucketName, const char *key, 
                         bool makePublic, bool useSrvEncrypt, const char *contentType,
-                        S3InitiateMultipartUploadResponse *response /* out */  )
+                        WsInitiateMultipartUploadResponse *response /* out */  )
 {
     dbgAssert( bucketName );
     dbgAssert( key );
-    dbgAssert( !m_isWalrus );
+    dbgAssert( m_storType == WST_S3 );
 
     LOG_TRACE( "enter initiateMultipartUpload: conn=0x%llx", ( UInt64 )this );
 
     try
     {
-        S3InitiateMultipartUploadRequest request( key );
+        WsInitiateMultipartUploadRequest request( key );
         init( &request, bucketName, key, "?uploads" /* keySuffix */, 
             contentType ? contentType : s_contentTypeBinary, makePublic, useSrvEncrypt );
 
-        S3ResponseDetails &responseDetails = request.execute();  
+        WsResponseDetails &responseDetails = request.execute();  
         handleErrors( responseDetails );
 
         if( response )
@@ -3173,16 +3206,16 @@ S3Connection::initiateMultipartUpload( const char *bucketName, const char *key,
 }
 
 void
-S3Connection::putPart( const char *bucketName, const char *key, const char *uploadId, 
+WsConnection::putPart( const char *bucketName, const char *key, const char *uploadId, 
         int partNumber, const void *data, size_t size, 
-        S3PutResponse *response /* out */  )
+        WsPutResponse *response /* out */  )
 {
     dbgAssert( bucketName );
     dbgAssert( key );
     dbgAssert( uploadId );
     dbgAssert( partNumber > 0 );
     dbgAssert( implies( size, data ) );
-    dbgAssert( !m_isWalrus );
+    dbgAssert( m_storType == WST_S3 );
 
     LOG_TRACE( "enter putPart: conn=0x%llx", ( UInt64 )this );
 
@@ -3192,7 +3225,7 @@ S3Connection::putPart( const char *bucketName, const char *key, const char *uplo
         // they are specified in initiateMultipartUpload(..), so pass
         // makePublic=false and useSrvEncrypt=false.
 
-        S3PutRequest request( key, data, size );
+        WsPutRequest request( key, data, size );
         put( &request, bucketName, key, uploadId, partNumber, 
             false /* makePublic */, false /* useSrvEncrypt */, NULL /* contentType */, response );
         
@@ -3211,16 +3244,16 @@ S3Connection::putPart( const char *bucketName, const char *key, const char *uplo
 
 
 void
-S3Connection::putPart( const char *bucketName, const char *key, const char *uploadId, 
-        int partNumber, S3PutRequestUploader *uploader, size_t partSize, 
-        S3PutResponse *response /* out */  )
+WsConnection::putPart( const char *bucketName, const char *key, const char *uploadId, 
+        int partNumber, WsPutRequestUploader *uploader, size_t partSize, 
+        WsPutResponse *response /* out */  )
 {
     dbgAssert( bucketName );
     dbgAssert( key );
     dbgAssert( uploadId );
     dbgAssert( partNumber > 0 );
     dbgAssert( uploader );
-    dbgAssert( !m_isWalrus );
+    dbgAssert( m_storType == WST_S3 );
 
     LOG_TRACE( "enter putPart: conn=0x%llx", ( UInt64 )this );
 
@@ -3230,7 +3263,7 @@ S3Connection::putPart( const char *bucketName, const char *key, const char *uplo
         // they are specified in initiateMultipartUpload(..), so pass
         // makePublic=false and useSrvEncrypt=false.
 
-        S3PutRequest request( key, uploader, partSize );
+        WsPutRequest request( key, uploader, partSize );
         put( &request, bucketName, key, uploadId, partNumber, 
             false /* makePublic */, false /* useSrvEncrypt */, NULL /* contentType */, response );
         
@@ -3248,21 +3281,21 @@ S3Connection::putPart( const char *bucketName, const char *key, const char *uplo
 }
 
 void 
-S3Connection::completeMultipartUpload( const char *bucketName, const char *key, 
-                        const char *uploadId, const S3PutResponse *parts, size_t size, 
-                        S3CompleteMultipartUploadResponse *response /* out */ )
+WsConnection::completeMultipartUpload( const char *bucketName, const char *key, 
+                        const char *uploadId, const WsPutResponse *parts, size_t size, 
+                        WsCompleteMultipartUploadResponse *response /* out */ )
 {
     dbgAssert( bucketName );
     dbgAssert( key );
     dbgAssert( uploadId );
     dbgAssert( parts );
-    dbgAssert( !m_isWalrus );
+    dbgAssert( m_storType == WST_S3 );
 
     LOG_TRACE( "enter completeMultipartUpload: conn=0x%llx", ( UInt64 )this );
 
     try
     {
-        S3CompleteMultipartUploadRequest request( key );
+        WsCompleteMultipartUploadRequest request( key );
 
         std::string keySuffix;
         keySuffix.reserve( 256 );
@@ -3295,7 +3328,7 @@ S3Connection::completeMultipartUpload( const char *bucketName, const char *key,
 
         request.setUpload( postRequest.c_str(), postRequest.size() );
 
-        S3ResponseDetails &responseDetails = request.execute();  
+        WsResponseDetails &responseDetails = request.execute();  
         handleErrors( responseDetails );
 
         if( response )
@@ -3312,13 +3345,13 @@ S3Connection::completeMultipartUpload( const char *bucketName, const char *key,
 }
 
 void
-S3Connection::abortMultipartUpload( const char *bucketName, const char *key, const char *uploadId, 
-                                    S3DelResponse *response /* out */ )
+WsConnection::abortMultipartUpload( const char *bucketName, const char *key, const char *uploadId, 
+                                    WsDelResponse *response /* out */ )
 {
     dbgAssert( bucketName );
     dbgAssert( key );
     dbgAssert( uploadId );
-    dbgAssert( !m_isWalrus );
+    dbgAssert( m_storType == WST_S3 );
 
     LOG_TRACE( "enter abortMultipartUpload: conn=0x%llx", ( UInt64 )this );
 
@@ -3340,11 +3373,11 @@ S3Connection::abortMultipartUpload( const char *bucketName, const char *key, con
 }
 
 void
-S3Connection::abortAllMultipartUploads( const char *bucketName, const char *prefix,
+WsConnection::abortAllMultipartUploads( const char *bucketName, const char *prefix,
     unsigned int maxUploadsInBatch )
 {
-    S3ListMultipartUploadsResponse response;
-    std::vector< S3MultipartUpload > uploads;
+    WsListMultipartUploadsResponse response;
+    std::vector< WsMultipartUpload > uploads;
     uploads.reserve( 64 );
 
     LOG_TRACE( "enter abortAllMultipartUploads: conn=0x%llx", ( UInt64 )this );
@@ -3368,15 +3401,15 @@ S3Connection::abortAllMultipartUploads( const char *bucketName, const char *pref
 }
 
 void
-S3Connection::listMultipartUploads( const char *bucketName, const char *prefix,
+WsConnection::listMultipartUploads( const char *bucketName, const char *prefix,
                     const char *keyMarker, const char *uploadIdMarker, const char *delimiter, 
                     unsigned int maxUploads,
-                    S3MultipartUploadEnum *uploadEnum,
-                    S3ListMultipartUploadsResponse *response /* out */ )
+                    WsMultipartUploadEnum *uploadEnum,
+                    WsListMultipartUploadsResponse *response /* out */ )
 {
     dbgAssert( bucketName );
     dbgAssert( uploadEnum );
-    dbgAssert( !m_isWalrus );
+    dbgAssert( m_storType == WST_S3 );
 
     LOG_TRACE( "enter listMultipartUploads: conn=0x%llx", ( UInt64 )this );
 
@@ -3396,12 +3429,12 @@ S3Connection::listMultipartUploads( const char *bucketName, const char *prefix,
         appendQueryPart( &url, "prefix", prefix );
         appendQueryPart( &url, "upload-id-marker", uploadIdMarker );
 
-        S3ListMultipartUploadsRequest request( prefix, uploadEnum );
+        WsListMultipartUploadsRequest request( prefix, uploadEnum );
         prepare( &request, bucketName, "?uploads" /* key */ );
 
         request.setUrl( url.c_str() );
 
-        S3ResponseDetails &responseDetails = request.execute();  
+        WsResponseDetails &responseDetails = request.execute();  
         handleErrors( responseDetails );
 
         if( response )
@@ -3420,49 +3453,49 @@ S3Connection::listMultipartUploads( const char *bucketName, const char *prefix,
 }
 
 void
-S3Connection::listMultipartUploads( const char *bucketName, const char *prefix,
+WsConnection::listMultipartUploads( const char *bucketName, const char *prefix,
                     const char *keyMarker, const char *uploadIdMarker, const char *delimiter, 
                     unsigned int maxUploads,
-                    std::vector< S3MultipartUpload > *uploads /* out */,
-                    S3ListMultipartUploadsResponse *response /* out */ )
+                    std::vector< WsMultipartUpload > *uploads /* out */,
+                    WsListMultipartUploadsResponse *response /* out */ )
 {
     dbgAssert( bucketName );
     dbgAssert( uploads );
-    dbgAssert( !m_isWalrus );
+    dbgAssert( m_storType == WST_S3 );
 
-    struct S3MultipartUploadArray : S3MultipartUploadEnum
+    struct WsMultipartUploadArray : WsMultipartUploadEnum
     {
-        S3MultipartUploadArray( std::vector< S3MultipartUpload > *_uploads )
+        WsMultipartUploadArray( std::vector< WsMultipartUpload > *_uploads )
             : uploads( _uploads )
         {
             dbgAssert( _uploads );
         }
 
-        virtual bool    onUpload( const S3MultipartUpload &upload ) 
+        virtual bool    onUpload( const WsMultipartUpload &upload ) 
         {
             uploads->push_back( upload );
             return true;
         }
 
-        std::vector< S3MultipartUpload > *uploads;
+        std::vector< WsMultipartUpload > *uploads;
     };
 
-    S3MultipartUploadArray uploadEnum( uploads );
+    WsMultipartUploadArray uploadEnum( uploads );
     listMultipartUploads( bucketName, prefix, keyMarker, uploadIdMarker, delimiter, maxUploads, 
         &uploadEnum, response );
 }
 
 void
-S3Connection::listAllMultipartUploads( const char *bucketName, const char *prefix, 
+WsConnection::listAllMultipartUploads( const char *bucketName, const char *prefix, 
                     const char *delimiter, 
-                    S3MultipartUploadEnum *uploadEnum, 
+                    WsMultipartUploadEnum *uploadEnum, 
                     unsigned int maxUploadsInBatch )
 {
     dbgAssert( uploadEnum );
 
     LOG_TRACE( "enter listAllMultipartUploads: conn=0x%llx", ( UInt64 )this );
 
-    S3ListMultipartUploadsResponse response;
+    WsListMultipartUploadsResponse response;
 
     do
     {
@@ -3476,15 +3509,15 @@ S3Connection::listAllMultipartUploads( const char *bucketName, const char *prefi
 }
 
 void
-S3Connection::listAllMultipartUploads( const char *bucketName, const char *prefix, 
-                       const char *delimiter, std::vector< S3MultipartUpload > *uploads, 
+WsConnection::listAllMultipartUploads( const char *bucketName, const char *prefix, 
+                       const char *delimiter, std::vector< WsMultipartUpload > *uploads, 
                        unsigned int maxUploadsInBatch )
 {
     dbgAssert( uploads );
 
     LOG_TRACE( "enter listAllMultipartUploads: conn=0x%llx", ( UInt64 )this );
 
-    S3ListMultipartUploadsResponse response;
+    WsListMultipartUploadsResponse response;
 
     do
     {
@@ -3498,21 +3531,21 @@ S3Connection::listAllMultipartUploads( const char *bucketName, const char *prefi
 }
 
 void
-S3Connection::setTimeout( long timeout )
+WsConnection::setTimeout( long timeout )
 {
     m_timeout = timeout;
 }
 
 void
-S3Connection::setConnectTimeout( long connectTime )
+WsConnection::setConnectTimeout( long connectTime )
 {
     m_connectTimeout = connectTime;
 }
 
 //////////////////////////////////////////////////////////////////////////////
-// S3Exception.
+// WsException.
 
-S3Exception::S3Exception( const char *fmt, ... )
+WsException::WsException( const char *fmt, ... )
 {
     dbgAssert( fmt );
 
@@ -3525,7 +3558,7 @@ S3Exception::S3Exception( const char *fmt, ... )
 }
 
 const char *
-S3Exception::what() const throw() 
+WsException::what() const throw() 
 { 
     return &m_msg[ 0 ]; 
 };

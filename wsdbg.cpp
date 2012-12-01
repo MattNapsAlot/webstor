@@ -20,8 +20,8 @@
 // Debug-only unit-test.
 //////////////////////////////////////////////////////////////////////////////
 
-#include "s3conn.h"
 #include "sysutils.h"
+#include "wsconn.h"
 #include <iostream>
 #include <stdlib.h>
 #include <string.h>
@@ -55,7 +55,7 @@ dbgRunUnitTest( void ( &fnTest )(), const char *name )
 
 
 static void
-dbgAssertS3Object( const S3Object &actual, const S3Object &expected ) 
+dbgAssertWsObject( const WsObject &actual, const WsObject &expected ) 
 {
     dbgAssert( !strcmp( actual.key.c_str(), expected.key.c_str() ) );
     dbgAssert( !strcmp( actual.etag.c_str(), expected.etag.c_str() ) );
@@ -64,17 +64,17 @@ dbgAssertS3Object( const S3Object &actual, const S3Object &expected )
 }
 
 static void
-dbgAssertS3Objects( const S3Object *actual, const S3Object *expected, size_t size ) 
+dbgAssertWsObjects( const WsObject *actual, const WsObject *expected, size_t size ) 
 {
     for( size_t i = 0; i < size; ++i )
     {
-        dbgAssertS3Object( actual[ i ], expected[ i ] );
+        dbgAssertWsObject( actual[ i ], expected[ i ] );
     }
 }
 
 static void
-dbgAssertS3MultipartUpload( const S3MultipartUpload &actual, 
-    const S3MultipartUpload &expected ) 
+dbgAssertS3MultipartUpload( const WsMultipartUpload &actual, 
+    const WsMultipartUpload &expected ) 
 {
     dbgAssert( !strcmp( actual.key.c_str(), expected.key.c_str() ) );
     dbgAssert( !strcmp( actual.uploadId.c_str(), expected.uploadId.c_str() ) );
@@ -82,8 +82,8 @@ dbgAssertS3MultipartUpload( const S3MultipartUpload &actual,
 }
 
 static void
-dbgAssertS3MultipartUploads( const S3MultipartUpload *actual, 
-    const S3MultipartUpload *expected, size_t size ) 
+dbgAssertS3MultipartUploads( const WsMultipartUpload *actual, 
+    const WsMultipartUpload *expected, size_t size ) 
 {
     for( size_t i = 0; i < size; ++i )
     {
@@ -92,37 +92,44 @@ dbgAssertS3MultipartUploads( const S3MultipartUpload *actual,
 }
 
 void
-dbgTestS3Connection()
+dbgTestWsConnection()
 {
     // Check env. variables, if they are not set, skip the rest of the test.
 
-    S3Config config = {};
+    WsConfig config = {};
     const char *bucketName = NULL;
 
     // Mandatory variables.
 
-    if( !( config.accKey = getenv( "AWS_ACCESS_KEY" ) ) ||
-        !( config.secKey = getenv( "AWS_SECRET_KEY" ) ) ||
-        !( bucketName = getenv( "AWS_BUCKET_NAME" ) ) )
+    if( !( config.accKey = getenv( "WS_ACCESS_KEY" ) ) ||
+        !( config.secKey = getenv( "WS_SECRET_KEY" ) ) ||
+        !( bucketName = getenv( "WS_BUCKET_NAME" ) ) )
     {
-        std::cout << "skip Amazon/Walrus test because no AWS_XXXX is set. ";
+        std::cout << "skip cloud storage test because no WS_XXXX is set. ";
         return;
     }
 
     // Optional variables.
 
-    config.host = getenv( "AWS_HOST" );
+    config.host = getenv( "WS_HOST" );
 
-    if( config.host && *config.host && !strstr( config.host, "amazonaws.com" ) )
-    {    
-        config.isWalrus = true;
+    // Infer storage type from the host name.
+
+    if( config.host )
+    {
+        if( strstr( config.host, ".amazonaws.com" ) )
+            config.storType = WST_S3;
+        else if( strstr( config.host, ".googleapis.com" ) )
+            config.storType = WST_GCS;
+        else
+            config.storType = WST_WALRUS;
     }
-    
-    config.proxy = getenv( "AWS_PROXY" );
 
-    // Instantiate S3 connection.
+    config.proxy = getenv( "WS_PROXY" );
 
-    S3Connection con( config );
+    // Instantiate WebStor connection.
+
+    WsConnection con( config );
     AsyncMan asyncMan;
 
     // Test data.
@@ -133,7 +140,7 @@ dbgTestS3Connection()
     const char *commonPrefix = "tmp/";
     const char *key = "tmp/folder1/test.dat";
     const char *emptyKey = "tmp/folder2/empty.dat";
-    const char *weirdKey = !config.isWalrus ?
+    const char *weirdKey = config.storType != WST_WALRUS ?
         "tmp/folder2/ ~!@#$%^&*()_+.<>?:'\\;.~ ,\"{}[]-=" :
         "tmp/folder2/!@#$%^&*()_+.<>?:'\\;.,\"{}[]-=";   // Walrus doesn't round-trip some characters (e.g. '~' or space)
 
@@ -141,7 +148,7 @@ dbgTestS3Connection()
 
     con.delAll( bucketName, commonPrefix );
 
-    if( !config.isWalrus )
+    if( config.storType == WST_S3 )
     {
         con.abortAllMultipartUploads( bucketName, commonPrefix );
     }
@@ -151,7 +158,7 @@ dbgTestS3Connection()
     // con.createBucket( "oblaksofttest314159" );
     // con.delBucket( "oblaksofttest314159" );
 
-    std::vector< S3Bucket > buckets;
+    std::vector< WsBucket > buckets;
     con.listAllBuckets( &buckets );
     dbgAssert( buckets.size() > 0 );
     
@@ -162,10 +169,10 @@ dbgTestS3Connection()
     
     // Verify put.
 
-    S3PutResponse putResponse;
-    S3PutResponse putResponseEmpty;
-    S3PutResponse putResponseWeird;
-    S3Connection con2( config );
+    WsPutResponse putResponse;
+    WsPutResponse putResponseEmpty;
+    WsPutResponse putResponseWeird;
+    WsConnection con2( config );
 
     con.put( bucketName, key, expected, expectedSize, 
         false /* publicReadAcl */, false /* srvEncrypt */, "text/plain", &putResponse );
@@ -187,7 +194,7 @@ dbgTestS3Connection()
             unsigned char actual[ 16 ];
             dbgAssert( dimensionOf( actual ) >= actualSize );
         
-            S3GetResponse getResponse;
+            WsGetResponse getResponse;
             con.get( bucketName, key, actual, actualSize, &getResponse );
 
             dbgAssert( getResponse.loadedContentLength == std::min( expectedSize, actualSize ) );
@@ -201,7 +208,7 @@ dbgTestS3Connection()
         unsigned char undefined = 0xde;
         unsigned char actual = undefined;
 
-        S3GetResponse getResponse;
+        WsGetResponse getResponse;
         con.get( bucketName, emptyKey, &actual, 1, &getResponse );
         dbgAssert( getResponse.loadedContentLength == 0 );
         dbgAssert( !getResponse.isTruncated );
@@ -246,8 +253,8 @@ dbgTestS3Connection()
     // Verify listObjects.
 
     {
-        S3ListObjectsResponse listBucketResponse;
-        std::vector< S3Object > objects;
+        WsListObjectsResponse listBucketResponse;
+        std::vector< WsObject > objects;
         objects.reserve( 8 );
 
         // Enum all objects.
@@ -264,16 +271,16 @@ dbgTestS3Connection()
             NULL /* delimiter */, 0 /* maxKeys */,
             &objects, &listBucketResponse );
 
-        S3Object expectedObjects[] = 
+        WsObject expectedObjects[] = 
         {
-            S3Object( key, "", putResponse.etag.c_str(), expectedSize, false ),
-            S3Object( weirdKey, "", putResponseWeird.etag.c_str(), 1, false ),
-            S3Object( emptyKey, "", putResponseEmpty.etag.c_str(), 0, false )
+            WsObject( key, "", putResponse.etag.c_str(), expectedSize, false ),
+            WsObject( weirdKey, "", putResponseWeird.etag.c_str(), 1, false ),
+            WsObject( emptyKey, "", putResponseEmpty.etag.c_str(), 0, false )
         };
         
         dbgAssert( !listBucketResponse.isTruncated );
         dbgAssert( objects.size() == dimensionOf( expectedObjects ) );
-        dbgAssertS3Objects( objects.data(), expectedObjects, dimensionOf( expectedObjects ) );
+        dbgAssertWsObjects( objects.data(), expectedObjects, dimensionOf( expectedObjects ) );
 
         // Paging (page 1).
 
@@ -289,7 +296,7 @@ dbgTestS3Connection()
             dbgAssert( !strcmp( listBucketResponse.nextMarker.c_str(),
                 objects[ 0 ].key.c_str() ) );
             dbgAssert( objects.size() == 1 );
-            dbgAssertS3Object( objects[ 0 ], expectedObjects[ 0 ] );
+            dbgAssertWsObject( objects[ 0 ], expectedObjects[ 0 ] );
         }
 
         // Paging (page 2).
@@ -300,7 +307,7 @@ dbgTestS3Connection()
             dimensionOf( expectedObjects ) - 1 /* maxKeys */, &objects, &listBucketResponse );
         dbgAssert( !listBucketResponse.isTruncated );
         dbgAssert( objects.size() == dimensionOf( expectedObjects ) - 1 );
-        dbgAssertS3Objects( objects.data(), &expectedObjects[ 1 ], 
+        dbgAssertWsObjects( objects.data(), &expectedObjects[ 1 ], 
             dimensionOf( expectedObjects ) - 1 );
 
         // Common prefixes.
@@ -315,32 +322,32 @@ dbgTestS3Connection()
             
             con.listObjects( bucketName, commonPrefix, listBucketResponse.nextMarker.c_str(),
                 "/" /* delimiter */, 
-                config.isWalrus ? 0 : 1 /* maxKeys */, &objects, &listBucketResponse );
+                config.storType == WST_WALRUS ? 0 : 1 /* maxKeys */, &objects, &listBucketResponse );
         } while( listBucketResponse.isTruncated );
 
-        S3Object expectedDirs[] = 
+        WsObject expectedDirs[] = 
         {
-            S3Object( "tmp/folder1/", "", "", -1, true ),
-            S3Object( "tmp/folder2/", "", "", -1, true  ),
+            WsObject( "tmp/folder1/", "", "", -1, true ),
+            WsObject( "tmp/folder2/", "", "", -1, true  ),
         };
 
         dbgAssert( !listBucketResponse.isTruncated );
         dbgAssert( objects.size() == dimensionOf( expectedDirs ) );
-        dbgAssertS3Objects( objects.data(), expectedDirs, dimensionOf( expectedDirs ) );
+        dbgAssertWsObjects( objects.data(), expectedDirs, dimensionOf( expectedDirs ) );
     }
 
     // Verify delete.
 
     {
-        S3DelResponse delResponse;
+        WsDelResponse delResponse;
         con.del( bucketName, key, &delResponse );
         con.del( bucketName, emptyKey, &delResponse );
         con.pendDel( &asyncMan, bucketName, weirdKey );
         con.completeDel();
         con.del( bucketName, "missing key" );
 
-        S3ListObjectsResponse listBucketResponse;
-        std::vector< S3Object > objects;
+        WsListObjectsResponse listBucketResponse;
+        std::vector< WsObject > objects;
         con.listObjects( bucketName, commonPrefix, NULL /* marker */, NULL /* delimiter */, 
             0 /* maxKeys */, &objects, &listBucketResponse );
 
@@ -349,17 +356,17 @@ dbgTestS3Connection()
 
     // Verify multipart upload.
 
-    if( !config.isWalrus )
+    if( config.storType == WST_S3 )
     {
-        S3InitiateMultipartUploadResponse initMultipartResponse;
-        S3InitiateMultipartUploadResponse initMultipartWeirdKeyResponse;
-        S3InitiateMultipartUploadResponse initMultipartEmptyKeyResponse;
+        WsInitiateMultipartUploadResponse initMultipartResponse;
+        WsInitiateMultipartUploadResponse initMultipartWeirdKeyResponse;
+        WsInitiateMultipartUploadResponse initMultipartEmptyKeyResponse;
         con.initiateMultipartUpload( bucketName, key, false, false, "x-foo/x-bar", &initMultipartResponse );
         con.initiateMultipartUpload( bucketName, weirdKey, false, false, NULL, &initMultipartWeirdKeyResponse );
         con.initiateMultipartUpload( bucketName, emptyKey, false, false, NULL, &initMultipartEmptyKeyResponse );
 
-        S3ListMultipartUploadsResponse listMultipartResponse;
-        std::vector< S3MultipartUpload > uploads;
+        WsListMultipartUploadsResponse listMultipartResponse;
+        std::vector< WsMultipartUpload > uploads;
 
         // Enum all uploads.
 
@@ -375,11 +382,11 @@ dbgTestS3Connection()
             NULL /* uploadMarker */, NULL /* delimiter */, 0 /* maxKeys */,
             &uploads, &listMultipartResponse );
 
-        S3MultipartUpload expectedUploads[] = 
+        WsMultipartUpload expectedUploads[] = 
         {
-            S3MultipartUpload( key, initMultipartResponse.uploadId.c_str(), false ),
-            S3MultipartUpload( weirdKey, initMultipartWeirdKeyResponse.uploadId.c_str(), false ),
-            S3MultipartUpload( emptyKey, initMultipartEmptyKeyResponse.uploadId.c_str(), false )
+            WsMultipartUpload( key, initMultipartResponse.uploadId.c_str(), false ),
+            WsMultipartUpload( weirdKey, initMultipartWeirdKeyResponse.uploadId.c_str(), false ),
+            WsMultipartUpload( emptyKey, initMultipartEmptyKeyResponse.uploadId.c_str(), false )
         };
 
         dbgAssert( !listMultipartResponse.isTruncated );
@@ -421,10 +428,10 @@ dbgTestS3Connection()
             "/" /* delimiter */, 
             0 /* maxKeys */, &uploads, &listMultipartResponse );
 
-        S3MultipartUpload expectedDirs[] = 
+        WsMultipartUpload expectedDirs[] = 
         {
-            S3MultipartUpload( "tmp/folder1/", "", true ),
-            S3MultipartUpload( "tmp/folder2/", "", true ),
+            WsMultipartUpload( "tmp/folder1/", "", true ),
+            WsMultipartUpload( "tmp/folder2/", "", true ),
         };
 
         dbgAssert( !listMultipartResponse.isTruncated );
@@ -434,7 +441,7 @@ dbgTestS3Connection()
         // putPart (5MB + 1 byte).
 
         size_t partSizes[] = { 5 * MB, 1 };
-        S3PutResponse putPartResponses[ dimensionOf( partSizes ) ];
+        WsPutResponse putPartResponses[ dimensionOf( partSizes ) ];
         int partNumber = 0;
         int seq = 0;
         size_t totalSize = 0;
@@ -458,36 +465,36 @@ dbgTestS3Connection()
 
         // Complete multipart upload.
 
-        S3CompleteMultipartUploadResponse completeMultipartResponse;
+        WsCompleteMultipartUploadResponse completeMultipartResponse;
         con.completeMultipartUpload( bucketName, key, initMultipartResponse.uploadId.c_str(), 
             putPartResponses, partNumber, &completeMultipartResponse );
 
         // putPart (1 byte).
 
-        S3PutResponse putPartWeirdKeyResponse;
+        WsPutResponse putPartWeirdKeyResponse;
         con.putPart( bucketName, weirdKey, initMultipartWeirdKeyResponse.uploadId.c_str(), 1/* starts with 1 */, 
             &expectedOne, 1, &putPartWeirdKeyResponse );
-        S3CompleteMultipartUploadResponse completeMultipartWeirdKeyResponse;
+        WsCompleteMultipartUploadResponse completeMultipartWeirdKeyResponse;
         con.completeMultipartUpload( bucketName, weirdKey, initMultipartWeirdKeyResponse.uploadId.c_str(), 
             &putPartWeirdKeyResponse, 1, &completeMultipartWeirdKeyResponse );
 
         // Enum all objects.
 
-        S3ListObjectsResponse listBucketResponse;
-        std::vector< S3Object > objects;
+        WsListObjectsResponse listBucketResponse;
+        std::vector< WsObject > objects;
         objects.reserve( 8 );
         con.listObjects( bucketName, commonPrefix, NULL /* marker */, NULL /* delimiter */, 0 /* maxKeys */,
             &objects, &listBucketResponse );
 
-        S3Object expectedObject[] = 
+        WsObject expectedObject[] = 
         { 
-            S3Object( key, "", completeMultipartResponse.etag.c_str(), totalSize, false /* isDir */  ),
-            S3Object( weirdKey, "", completeMultipartWeirdKeyResponse.etag.c_str(), 1, false /* isDir */  )
+            WsObject( key, "", completeMultipartResponse.etag.c_str(), totalSize, false /* isDir */  ),
+            WsObject( weirdKey, "", completeMultipartWeirdKeyResponse.etag.c_str(), 1, false /* isDir */  )
         };
 
         dbgAssert( objects.size() == dimensionOf( expectedObject ) );
         dbgAssert( !listBucketResponse.isTruncated );
-        dbgAssertS3Objects( objects.data(), expectedObject, dimensionOf( expectedObject ) );
+        dbgAssertWsObjects( objects.data(), expectedObject, dimensionOf( expectedObject ) );
 
         // Enum multipart uploads.
 
@@ -501,7 +508,7 @@ dbgTestS3Connection()
 
         // Abort multipart uploads.
 
-        S3DelResponse abortMultipartUploadResponse;
+        WsDelResponse abortMultipartUploadResponse;
         con.abortMultipartUpload( bucketName, emptyKey, uploads[ 0 ].uploadId.c_str(), 
             &abortMultipartUploadResponse );
 
@@ -575,7 +582,7 @@ dbgTestS3Connection()
 
     con.delAll( bucketName, commonPrefix );
 
-    if( !config.isWalrus )
+    if( config.storType == WST_S3 )
     {
         con.abortAllMultipartUploads( bucketName, commonPrefix );
     }
@@ -595,7 +602,7 @@ main( int argc, char **argv )
 
     try
     {
-        DBG_RUN_UNIT_TEST( dbgTestS3Connection );
+        DBG_RUN_UNIT_TEST( dbgTestWsConnection );
     }
     catch( const std::exception &e )
     {

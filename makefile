@@ -45,16 +45,16 @@ CXXFLAGS+=$(DEFINES) $(INCLUDES) $(LIBRARIES) -Wno-enum-compare
 LOADLIBES+=-lcurl -lssl -lxml2
 
 .PHONY: all
-all: s3dbg s3perf s3test
+all: wsdbg wsperf wscmd
 
 .PHONY: clean
 clean:
-	rm -f s3dbg s3perf s3test webstor.a
+	rm -f wsdbg wsperf wscmd webstor.a
 
-s3dbg: webstor.a
+wsdbg: webstor.a
 
-s3perf: webstor.a
+wsperf: webstor.a
 
-s3test: webstor.a
+wscmd: webstor.a
 
-webstor.a: webstor.a(asyncurl.o s3conn.o sysutils.o)
+webstor.a: webstor.a(asyncurl.o wsconn.o sysutils.o)
