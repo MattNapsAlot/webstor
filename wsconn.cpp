@@ -2512,7 +2512,7 @@ WsConnection::prepare( WsRequest *request, const char *bucketName, const char *k
     // to curl.
 
     setRequestHeaders( m_accKey, m_secKey,
-    		"8AIJjsAzBdpQ5R4wUN4Rjw==" /* contentMd5 */, contentType, makePublic, useSrvEncrypt,
+    		0 /* contentMd5 */, contentType, makePublic, useSrvEncrypt,
         request->httpVerb(), bucketName, key, m_storType,
         &request->headers, m_sessionToken);
 
