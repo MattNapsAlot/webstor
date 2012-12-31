@@ -50,9 +50,9 @@ static const size_t MB = 1024 * 1024;
 
 static StringWithLen s_cmdFlags = 
 #ifdef WS_CMD_CLI_COMPAT
-    { STRING_WITH_LEN( "-i -s -H -U -P -G -a -f -n -p -m -x -d -z -b -v -t -s -help --help -? --? -W -k" ) };
+    { STRING_WITH_LEN( "-i -s -H -U -P -G -a -f -n -p -m -x -d -z -b -v -t -help --help -? --? -W -k" ) };
 #else
-    { STRING_WITH_LEN( "-i -s -H -U -P -G -a -f -n -p -m -x -d -z -b -v -t -s -help --help -? --?" ) };
+    { STRING_WITH_LEN( "-i -s -H -U -P -G -a -f -n -p -m -x -d -z -b -v -t -help --help -? --?" ) };
 #endif
 
 static void
@@ -101,7 +101,6 @@ usage()
         "    -v verbose mode.                                                           \n"
         "    -t session token for use with short-lived AWS S3 keys.                     \n"
         "       (it can be specified vi WS_SESSION_TOKEN env. variable)                 \n"
-        "    -s checksum of file being uploaded                                         \n"
         "                                                                               \n"
         "Some of options can be specified through env. variables:                       \n"
         "    WS_ACCESS_KEY  - instead of option '-i',                                   \n"
