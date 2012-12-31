@@ -413,6 +413,8 @@ static const char s_aclHeaderValue[] = "public-read";
 static const char s_encryptHeaderKey[] = "x-amz-server-side-encryption";
 static const char s_encryptHeaderValue[] = "AES256";
 
+static const char s_tokenHeaderKey[] = "x-amz-security-token";
+
 static inline void
 appendSigHeader( const char *key, const char *value, std::string *ptoSign )
 {
@@ -434,7 +436,7 @@ static void
 calcSignature( const std::string &accKey, const std::string &secKey,
     const char *contentMd5, const char *contentType, const char *date, bool makePublic, bool srvEncrypt,
     const char *action, const char *bucketName, const char *key, WsStorType storType, 
-    std::string *signature )
+    std::string *signature, std::string sessionToken )
 {
     dbgAssert( action );
     dbgAssert( signature );
@@ -454,6 +456,9 @@ calcSignature( const std::string &accKey, const std::string &secKey,
 
     if( makePublic )
         appendSigHeader( s_aclHeaderKey, s_aclHeaderValue, &toSign );
+
+    if( sessionToken.compare("") != 0 )
+    	appendSigHeader( s_tokenHeaderKey, sessionToken.c_str(), &toSign );
 
     if( srvEncrypt )
         appendSigHeader( s_encryptHeaderKey, s_encryptHeaderValue, &toSign );
@@ -535,7 +540,7 @@ static void
 setRequestHeaders( const std::string &accKey, const std::string &secKey,
     const char *contentMd5, const char *contentType, bool makePublic, bool srvEncrypt,
     const char *action, const char *bucketName, const char *key, WsStorType storType, 
-    ScopedCurlList *plist )
+    ScopedCurlList *plist, const std::string sessionToken )
 {
     dbgAssert( plist );
 
@@ -567,7 +572,7 @@ setRequestHeaders( const std::string &accKey, const std::string &secKey,
     calcSignature( accKey, secKey,
         contentMd5, contentType, date, makePublic, srvEncrypt,
         action, bucketName, key, storType,
-        &signature );
+        &signature, sessionToken );
 
     // Set request headers.
 
@@ -603,6 +608,9 @@ setRequestHeaders( const std::string &accKey, const std::string &secKey,
 
     if( makePublic )
         appendRequestHeader( s_aclHeaderKey, s_aclHeaderValue, plist );
+
+    if( sessionToken.compare("") != 0 )
+    	appendRequestHeader( s_tokenHeaderKey, sessionToken.c_str(), plist );
 
     if( srvEncrypt )
         appendRequestHeader( s_encryptHeaderKey, s_encryptHeaderValue, plist );
@@ -2254,6 +2262,7 @@ throwSummary( const char *op, const char *key )
 WsConnection::WsConnection( const WsConfig &config )
     : m_accKey( config.accKey )
     , m_secKey( config.secKey )
+    , m_sessionToken( config.sessionToken )
     , m_baseUrl()
     , m_proxy( config.proxy ? config.proxy : "" )
     , m_storType( config.storType )
@@ -2503,9 +2512,9 @@ WsConnection::prepare( WsRequest *request, const char *bucketName, const char *k
     // to curl.
 
     setRequestHeaders( m_accKey, m_secKey,
-        0 /* contentMd5 */, contentType, makePublic, useSrvEncrypt,
+    		"8AIJjsAzBdpQ5R4wUN4Rjw==" /* contentMd5 */, contentType, makePublic, useSrvEncrypt,
         request->httpVerb(), bucketName, key, m_storType,
-        &request->headers );
+        &request->headers, m_sessionToken);
 
     curl_easy_setopt_checked( m_curl, CURLOPT_HTTPHEADER, static_cast< curl_slist * >( request->headers ) );
 

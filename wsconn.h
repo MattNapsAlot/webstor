@@ -70,6 +70,7 @@ enum WsStorType
 /// WsConfig config = {};
 /// config.accKey = ...;
 /// config.secKey = ...;
+/// config.sessionToken = ...;
 /// config.isHttps = true;
 /// 
 /// WsConnection conn(config);
@@ -85,6 +86,11 @@ struct WsConfig
 
     const char     *secKey;
     
+    /// Session token for AWS S3. only needed for AIM generated
+    /// secret keys.
+
+    const char     *sessionToken;
+
     /// An optional region-specific host endpoint public cloud storage
     /// or mandatory host name for Walrus.
 
@@ -752,6 +758,7 @@ private:
 
     std::string     m_accKey;
     std::string     m_secKey;
+    std::string     m_sessionToken;
     std::string     m_baseUrl;
     std::string     m_region;
     WsStorType      m_storType;

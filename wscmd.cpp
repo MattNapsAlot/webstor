@@ -50,9 +50,9 @@ static const size_t MB = 1024 * 1024;
 
 static StringWithLen s_cmdFlags = 
 #ifdef WS_CMD_CLI_COMPAT
-    { STRING_WITH_LEN( "-i -s -H -U -P -G -a -f -n -p -m -x -d -z -b -v -help --help -? --? -W -k" ) };
+    { STRING_WITH_LEN( "-i -s -H -U -P -G -a -f -n -p -m -x -d -z -b -v -t -s -help --help -? --? -W -k" ) };
 #else
-    { STRING_WITH_LEN( "-i -s -H -U -P -G -a -f -n -p -m -x -d -z -b -v -help --help -? --?" ) };
+    { STRING_WITH_LEN( "-i -s -H -U -P -G -a -f -n -p -m -x -d -z -b -v -t -s -help --help -? --?" ) };
 #endif
 
 static void
@@ -99,6 +99,9 @@ usage()
         "       size must be 5MB minimum, not supported by Walrus),                     \n"
         "    -b make public (for 'createBucket' and 'put'),                             \n"
         "    -v verbose mode.                                                           \n"
+        "    -t session token for use with short-lived AWS S3 keys.                     \n"
+        "       (it can be specified vi WS_SESSION_TOKEN env. variable)                 \n"
+        "    -s checksum of file being uploaded                                         \n"
         "                                                                               \n"
         "Some of options can be specified through env. variables:                       \n"
         "    WS_ACCESS_KEY  - instead of option '-i',                                   \n"
@@ -187,6 +190,7 @@ struct Options
     bool makePublic;
     bool showUsage;
     bool verbose;
+    std::string sessionToken;
 };
 
 struct Statistics
@@ -293,6 +297,7 @@ readEnvVars( Options *options )
     readEnvVar( "WS_BUCKET_NAME", &options->bucketName );
     readEnvVar( "WS_HOST", &options->host );
     readEnvVar( "WS_PROXY", &options->proxy );
+    readEnvVar( "WS_SESSION_TOKEN", &options->sessionToken );
 }
 
 
@@ -345,7 +350,8 @@ parseCommandLine( int argc, char **argv, Options *options )
             tryGetValue( "--help", &i, argc, argv, &options->showUsage ) ||
             tryGetValue( "-help", &i, argc, argv, &options->showUsage ) ||
             tryGetValue( "-?", &i, argc, argv, &options->showUsage ) ||
-            tryGetValue( "--?", &i, argc, argv, &options->showUsage ) 
+            tryGetValue( "--?", &i, argc, argv, &options->showUsage ) ||
+            tryGetValue( "-t", &i, argc, argv, &options->sessionToken )
 #ifdef WS_CMD_CLI_COMPAT
             || tryGetValue( "-k", &i, argc, argv, &options->prefix ) 
             || tryGetValue( "-W", &i, argc, argv, &unused )
@@ -965,6 +971,7 @@ execute( const Options &options, Statistics *stat )
     config.isHttps = storType != WST_WALRUS && options.isHttps;
     config.port = options.port.c_str();
     config.proxy = options.proxy.c_str();
+    config.sessionToken = options.sessionToken.c_str();
 
     WsConnection conn( config );
 
